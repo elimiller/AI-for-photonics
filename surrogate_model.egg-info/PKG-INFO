@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: surrogate-model
+Version: 0.1.0
+Summary: A universal function approximator surrogate model using PyTorch, custom initialization, and autograd.
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: torch>=2.0.0
+Requires-Dist: matplotlib>=3.7.0
+Requires-Dist: numpy>=1.24.0
+Provides-Extra: dev
+Requires-Dist: ipykernel>=6.0.0; extra == "dev"
