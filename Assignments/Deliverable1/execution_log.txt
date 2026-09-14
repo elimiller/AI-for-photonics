@@ -1,0 +1,32 @@
+python      : 3.13.12 on Windows AMD64
+torch       : 2.13.0+cpu   numpy: 2.4.3   matplotlib: 3.10.8
+backend     : CPU  (cpu)
+seed        : 0
+Training set has 1400 samples
+Validation set has 300 samples
+Test set has 300 samples
+alpha is 0.1
+omega is 1
+model: 4,353 parameters, 3 Linear layers
+
+training: Adam(lr=0.002), cosine annealing, batch size 140, 2000 epochs
+EPOCH     1:  LOSS train 7.6404e-01 valid 8.5070e-01   lr 2.0e-03     0.0s
+EPOCH   201:  LOSS train 9.5637e-05 valid 6.5516e-05   lr 2.0e-03     6.2s
+EPOCH   401:  LOSS train 4.0122e-03 valid 8.1863e-04   lr 1.8e-03    11.6s
+EPOCH   601:  LOSS train 5.6911e-03 valid 1.1311e-03   lr 1.6e-03    17.2s
+EPOCH   801:  LOSS train 1.1803e-04 valid 6.2159e-05   lr 1.3e-03    22.7s
+EPOCH  1001:  LOSS train 8.4910e-05 valid 2.7833e-05   lr 1.0e-03    28.3s
+EPOCH  1201:  LOSS train 5.8358e-05 valid 5.0959e-05   lr 6.9e-04    33.7s
+EPOCH  1401:  LOSS train 4.8770e-05 valid 1.8962e-04   lr 4.1e-04    38.9s
+EPOCH  1601:  LOSS train 1.2372e-05 valid 5.8839e-06   lr 1.9e-04    44.3s
+EPOCH  1801:  LOSS train 7.7949e-06 valid 4.4264e-06   lr 4.9e-05    49.5s
+EPOCH  2000:  LOSS train 6.6936e-06 valid 4.1915e-06   lr 1.0e-07    54.7s
+
+finished in 54.7s on CPU
+final MSE 6.6936e-06   (down 1.1e+05x from the first epoch)
+best validation MSE 3.7361e-06   (weights saved to model_best.pt)
+
+test mse    8.7829e-06
+
+derivative L2 error             1.6757e+00
+derivative relative L2 error    9.1841e-02
