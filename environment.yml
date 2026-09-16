@@ -1,0 +1,19 @@
+name: metasurface_project_0
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.13
+  - pymeep
+  - ipykernel
+  - numpy
+  - matplotlib
+  - scipy
+  - pytorch
+  - pandas
+  - pip:
+    - gdsfactory
+    - tidy3d
+  
+
+

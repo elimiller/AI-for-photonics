@@ -40,7 +40,9 @@ period      = 0.60      # unit cell period in x and y (um)
 pillar_h    = 0.30       # pillar height (um)
 sub_h       = 0.50       # substrate thickness modeled explicitly before PML (um)
 arm_w       = 0.10       # width of the C's arms (um)
-outer_side  = 0.40       # outer side length of the square C shape (um)
+outer_side  = 0.40
+cutout_horizontal_length = outer_side - arm_w
+cutout_vertical_length = outer_side - 2 * arm_w
 gap_w       = 0.08       # width of the gap that turns the ring into a "C" (um)
 
 n_pillar    = 2.00        # pillar refractive index
@@ -51,7 +53,7 @@ resolution  = 40          # pixels per um -- lower this first to test speed,
 
 # Wavelength range of interest -- set this to whatever band you actually
 # care about (visible/NIR/MIR). Example below spans 1.0-2.0 um.
-wl_min, wl_max = 1.0, 2.0
+wl_min, wl_max = 0.531, 0.533
 fmin, fmax = 1 / wl_max, 1 / wl_min
 fcen = 0.5 * (fmin + fmax)
 df   = fmax - fmin
@@ -60,14 +62,15 @@ nfreq = 100    # number of points across the spectrum (from ONE run)
 # ---------------------------------------------------------------------
 # CELL / BOUNDARY SETUP
 # ---------------------------------------------------------------------
-dpml = 1.0                     # PML thickness (um) -- roughly 1 wavelength
-z_span = sub_h + pillar_h + 2.0  # air gap above pillar for source/monitor
+dpml = 0.5                     # PML thickness (um) -- roughly 1 wavelength
+space_buffer = 1.0
+z_span = sub_h + pillar_h + 2*space_buffer  # air gap above pillar for source/monitor
 cell_z = z_span + 2 * dpml
-
+# Geometry Creaation
 cell = mp.Vector3(period, period, cell_z)
 
 pml_layers = [mp.PML(dpml, direction=mp.Z)]
-
+#To be changed in a minute
 k_point = mp.Vector3(0, 0, 0)   # normal incidence -> use Bloch-periodic BCs
                                  # (k_point=0 here; MEEP handles x/y periodicity
                                  # automatically when boundary layers are only in z)
@@ -76,8 +79,8 @@ k_point = mp.Vector3(0, 0, 0)   # normal incidence -> use Bloch-periodic BCs
 # GEOMETRY: build the C-shape as a square ring (4 boxes) minus a gap
 # ---------------------------------------------------------------------
 # z-center of the pillar and substrate for placement
-sub_center_z  = -0.5 * cell_z + dpml + sub_h / 2
-pillar_center_z = -0.5 * cell_z + dpml + sub_h + pillar_h / 2
+sub_center_z  = -0.5 * cell_z + dpml + sub_h / 2 + space_buffer
+pillar_center_z = -0.5 * cell_z + dpml + sub_h + pillar_h / 2 + space_buffer
 
 substrate = mp.Block(
     size=mp.Vector3(period, period, sub_h),
@@ -89,13 +92,13 @@ substrate = mp.Block(
 # of width arm_w), then cut a gap out of one side to make it a "C".
 outer = mp.Block(
     size=mp.Vector3(outer_side, outer_side, pillar_h),
-    center=mp.Vector3(0, 0, pillar_center_z),
+    center=mp.Vector3(0.5 * period - outer_side, 0.5*period - outer_side, pillar_center_z),
     material=mp.Medium(index=n_pillar),
 )
 inner_side = outer_side - 2 * arm_w
 inner_void = mp.Block(
-    size=mp.Vector3(inner_side, inner_side, pillar_h + 0.01),
-    center=mp.Vector3(0, 0, pillar_center_z),
+    size=mp.Vector3(cutout_horizontal_length, cutout_vertical_length, pillar_h + 0.01),
+    center=mp.Vector3(0.5 * (period - outer_side) - cutout_horizontal_length / 2, 0.5*(period - outer_side) - arm_w - cutout_vertical_length / 2, pillar_center_z),
     material=mp.Medium(index=1.0),  # air, carves out the ring's interior
 )
 gap_void = mp.Block(
@@ -114,7 +117,7 @@ src_z = -0.5 * cell_z + dpml + 0.3  # just inside the PML, below substrate...
 # ABOVE the pillar (or below the substrate) and monitors on both sides.
 # Placing it below the substrate here so transmission = through both
 # substrate and pillar.
-
+# %% Sources
 sources = [
     mp.Source(
         mp.GaussianSource(fcen, fwidth=df),
@@ -123,7 +126,7 @@ sources = [
         size=mp.Vector3(period, period, 0),
     )
 ]
-
+# %% Simulation setup
 sim = mp.Simulation(
     cell_size=cell,
     boundary_layers=pml_layers,
@@ -133,7 +136,13 @@ sim = mp.Simulation(
     resolution=resolution,
     default_material=mp.Medium(index=1.0),  # air everywhere else
 )
-
+sim.plot2D(
+    output_plane=mp.Volume(center=mp.Vector3(), size=cell),
+    fields=mp.Ex,
+    output_directory="plots",
+    plot_boundaries=True,
+)
+# %% Monitors
 # ---------------------------------------------------------------------
 # FLUX MONITORS: one run -> full spectrum via DFT
 # ---------------------------------------------------------------------
@@ -174,3 +183,19 @@ if __name__ == "__main__":
 
     print("Saved spectrum_output.npz -- plot transmission/reflection vs "
           "wavelength_um to sanity-check the resonance.")
+# %% Plotting the spectrum 
+data = np.load("spectrum_output.npz")
+wavelengths = data["wavelength_um"]
+transmission = data["transmission"]
+reflection = data["reflection"]
+
+plt.figure(figsize=(7, 5))
+# plt.plot(wavelengths, transmission, label="Transmission")
+plt.plot(wavelengths, reflection, label="Reflection")
+plt.xlabel("Wavelength (μm)")
+plt.ylabel("Flux (normalized)")
+plt.title("C-pillar unit cell spectrum")
+plt.legend()
+plt.grid(alpha=0.3)
+plt.show()
+# %%
