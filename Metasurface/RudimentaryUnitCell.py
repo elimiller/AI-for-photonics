@@ -32,6 +32,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 from functools import partial
 import time
+import gdsfactory as gf
+import gplugins
+import gplugins.gmeep as gm 
+from gplugins.gmeep.get_simulation import get_simulation
+import os
+# %% Import necessary functions
+
+directory = os.getcwd() # For data savepath for later perhaps
+from Unit_cell_generation import*
 # %% Input params
 # ---------------------------------------------------------------------
 # GEOMETRY PARAMETERS (these are exactly the knobs you'll sweep later)
@@ -74,7 +83,7 @@ pml_layers = [mp.PML(dpml, direction=mp.Z)]
 k_point = mp.Vector3(0, 0, 0)   # normal incidence -> use Bloch-periodic BCs
                                  # (k_point=0 here; MEEP handles x/y periodicity
                                  # automatically when boundary layers are only in z)
-
+# %% Geometries
 # ---------------------------------------------------------------------
 # GEOMETRY: build the C-shape as a square ring (4 boxes) minus a gap
 # ---------------------------------------------------------------------
