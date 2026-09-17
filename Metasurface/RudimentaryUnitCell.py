@@ -31,7 +31,7 @@ import os
 from Unit_cell_generation import*
 
 
-# %% Paper unit-cell parameters
+# %% Manual unit-cell parameters
 wavelength = 1.55             # design wavelength [um]
 period = 0.60                 # square-lattice pitch [um]
 pillar_h = 0.85               # a-Si cylinder height [um]
