@@ -118,7 +118,7 @@ def run_unit_cell(extra_geometry: list[mp.GeometricObject]) -> complex:
     dft = sim.add_dft_fields([mp.Ex], fcen, 0, 1, where=transmission_plane)
     sim.run(
         until_after_sources=mp.stop_when_fields_decayed(
-            50, mp.Ex, mp.Vector3(0, 0, monitor_z), 1e-8
+            50, mp.Ex, mp.Vector3(0, 0, monitor_z), 1e-3
         )
     )
     field = sim.get_dft_array(dft, mp.Ex, 0)
@@ -149,7 +149,7 @@ if __name__ == "__main__":
 # %% Loop through radii
 sim_dict = {}
 if RUN_SIMULATION:
-    sweep_t0 = time.perf_counter
+    sweep_t0 = time.perf_counter()
     for idx, radius in enumerate(radius_list):
         if idx == 0:
             PILLAR_LAYER = (1, 0)  # circle_unit_cell() draws its polygon on this layer
@@ -233,30 +233,46 @@ if RUN_SIMULATION:
     for radius, (reference_field, pillar_field) in sim_dict.items():
         transmission_coefficient = pillar_field / reference_field
         power_transmission = abs(transmission_coefficient) ** 2
-        phase = np.angle(transmission_coefficient) % (2 * np.pi)
+        phase = np.degrees(np.angle(transmission_coefficient) % (2 * np.pi))
         radii.append(radius)
         transmissions.append(power_transmission)
         phases.append(phase)
 
-    fig, ax_transmission = plt.subplots()
-    transmission_points = ax_transmission.scatter(
-        radii, transmissions, marker="x", color="tab:blue", label="Power transmission"
-    )
-    ax_transmission.set_xlabel("Pillar radius (um)")
-    ax_transmission.set_ylabel("Power transmission", color="tab:blue")
-    ax_transmission.tick_params(axis="y", labelcolor="tab:blue")
-
-    ax_phase = ax_transmission.twinx()
+    fig, ax_phase = plt.subplots()
     phase_points = ax_phase.scatter(
         radii, phases, marker="o", color="tab:orange", label="Phase"
     )
-    ax_phase.set_ylabel("Phase (rad)", color="tab:orange")
+    ax_phase.set_xlabel("Pillar radius (um)")
+    ax_phase.set_ylabel("Phase (degrees)", color="tab:orange")
     ax_phase.tick_params(axis="y", labelcolor="tab:orange")
-    ax_phase.set_ylim(0, 2 * np.pi)
+    ax_phase.set_ylim(0, 360)
+
+    ax_transmission = ax_phase.twinx()
+    transmission_points = ax_transmission.scatter(
+        radii, transmissions, marker="x", color="tab:blue", label="Power transmission"
+    )
+    ax_transmission.set_ylabel("Power transmission", color="tab:blue")
+    ax_transmission.tick_params(axis="y", labelcolor="tab:blue")
 
     ax_transmission.set_title("Transmission and phase versus pillar radius")
-    ax_transmission.legend(handles=[transmission_points, phase_points])
+    ax_phase.legend(handles=[phase_points, transmission_points])
     fig.tight_layout()
     plt.show()
 
+# %% Doucmentation for future work
+source_width_x = 1
+source_width_y = 1
+def elliptical_gaussian(p):
+    return np.exp(-(p.x / wx)**2 - (p.y / wy)**2)
+
+mp.Source(
+    mp.GaussianSource(fcen, fwidth=0.05 * fcen),
+    component=mp.Ex,
+    center=mp.Vector3(0, 0, source_z),
+    size=mp.Vector3(source_width_x, source_width_y, 0),
+    amp_func=elliptical_gaussian,
+)
+#Also change kpoint in sim, and 
+\(\hat{k}=(\sin\theta\cos\phi,\ \sin\theta\sin\phi,\ -\cos\theta)\)
+k = mp.vector3(np.sin(theta)*np.cos)
 # %%
