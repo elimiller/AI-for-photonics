@@ -52,7 +52,7 @@ def elliptical_pillar_gds(r_x: float, r_y: float, theta: float, directory: Path)
     if not directory.is_dir():
         raise NotADirectoryError(f"GDS output directory does not exist: {directory}")
 
-    pillar = gf.Component("elliptical_pillar")
+    pillar = gf.Component(f"elliptical_pillar_rx_{r_x}_ry_{r_y}_theta_{theta}")
     ellipse = pillar.add_ref(
         gf.components.ellipse(radii=(r_x, r_y), layer=(1, 0))
     )

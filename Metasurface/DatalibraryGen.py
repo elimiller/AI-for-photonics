@@ -14,11 +14,15 @@ import os
 from pathlib import Path
 
 from Unit_cell_generation import*
+gf.gpdk.PDK.activate()
 # %% Find correct directory
 path = Path(__file__).parent
 print(path)
-gds_directory = path / "GDS libraries" / "Elliptical_focus_library"
-print(gds_directory)
+save_path = path / "Unit_cell_Libraries" /  'Ellipse Pillar SiN on SiO2 532 nm KAIST' 
+print(save_path)
+gds_lib_path = save_path / 'GDS Library'
+data_lib_path = save_path / 'Library Data'
+
 # %% Manual params
 r_x_list = [0.25]
 r_y_list = [0.25]
@@ -37,7 +41,7 @@ substrate_h = 1.0
 # %% Generate GDS library 
 gds_files = generate_unit_cell_gds_lib(
     elliptical_pillar_gds,
-    gds_directory,
+    gds_lib_path,
     r_x=r_x_list,
     r_y=r_y_list,
     theta=theta_list,
@@ -58,8 +62,8 @@ def run_unit_cell(
     """Return the mean complex TE field at the transmission plane."""
     cell_z = substrate_h + pillar_h + 2 * air_padding + 2 * dpml
     cell = mp.Vector3(period, period, cell_z)
-    source_z = 0.5 * cell_z - dpml - 0.35
-    monitor_z = -0.5 * cell_z + dpml + 0.35
+    monitor_z = 0.5 * cell_z - dpml - 0.35
+    source_z = -0.5 * cell_z + dpml + 0.35
     incident_angle_rad = np.deg2rad(incident_angle_deg)
 
     # Meep's k_point is in inverse-layout units.  The incident medium is air,
