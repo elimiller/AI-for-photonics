@@ -1,5 +1,10 @@
 # %% Imports
 import gdsfactory as gf
+import os
+from pathlib import Path
+from collections.abc import Callable, Iterable
+from inspect import Parameter, signature
+from itertools import product
 # ## Structures
 # %% Different Geometries
 
@@ -29,4 +34,88 @@ if __name__ == "__main__":
     gf.gpdk.PDK.activate()
     example_cell = c_shape_unit_cell(20, 2, 45)
     example_cell.write_gds("demo_unit_cell.gds")
+# %% Make gds library for actual project
+def elliptical_pillar_gds(r_x: float, r_y: float, theta: float, directory: Path) -> Path:
+    """Write one rotated elliptical pillar GDS to ``directory``.
+
+    Args:
+        r_x: Ellipse radius along its local x axis, in layout units.
+        r_y: Ellipse radius along its local y axis, in layout units.
+        theta: Counter-clockwise rotation in degrees.
+        directory: Existing directory that will receive the generated ``.gds`` file.
+
+    Returns:
+        Path to the written GDS file (not the in-memory gdsfactory component).
+    """
+    if not isinstance(directory, Path):
+        raise TypeError("directory must be a pathlib.Path object")
+    if not directory.is_dir():
+        raise NotADirectoryError(f"GDS output directory does not exist: {directory}")
+
+    pillar = gf.Component("elliptical_pillar")
+    ellipse = pillar.add_ref(
+        gf.components.ellipse(radii=(r_x, r_y), layer=(1, 0))
+    )
+    ellipse.drotate(theta)
+
+    gds_path = directory / f"elliptical_pillar_rx_{r_x}_ry_{r_y}_theta_{theta}.gds"
+    pillar.write_gds(gds_path)
+    return gds_path
+# %% Generic gds library sweep saver function
+def generate_unit_cell_gds_lib(
+    pillar_geometry: Callable[..., Path],
+    directory: Path,
+    **parameter_values: Iterable[object],
+) -> list[Path]:
+    """Write a GDS for every combination of a pillar exporter's parameters.
+
+    ``pillar_geometry`` must have a keyword parameter named ``directory``.
+    Supply an iterable for each geometry parameter that should be swept.
+
+    Example:
+        generate_unit_cell_gds_lib(
+            elliptical_pillar_gds,
+            gds_directory,
+            r_x=[0.10, 0.15, 0.20],
+            r_y=[0.10, 0.15],
+            theta=[0, 45, 90],
+        )
+    """
+    if not isinstance(directory, Path):
+        raise TypeError("directory must be a pathlib.Path object")
+
+    function_parameters = signature(pillar_geometry).parameters
+    if "directory" not in function_parameters:
+        raise ValueError("pillar_geometry must define a 'directory' parameter")
+
+    geometry_parameter_names = [
+        name
+        for name, parameter in function_parameters.items()
+        if name != "directory"
+        and parameter.kind
+        in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)
+    ]
+    unknown_parameters = set(parameter_values) - set(geometry_parameter_names)
+    if unknown_parameters:
+        names = ", ".join(sorted(unknown_parameters))
+        raise ValueError(f"Unknown parameter sweep(s) for {pillar_geometry.__name__}: {names}")
+
+    missing_parameters = [
+        name
+        for name in geometry_parameter_names
+        if function_parameters[name].default is Parameter.empty
+        and name not in parameter_values
+    ]
+    if missing_parameters:
+        names = ", ".join(missing_parameters)
+        raise ValueError(f"Missing parameter sweep(s): {names}")
+
+    parameter_names = list(parameter_values)
+    parameter_sweeps = [list(parameter_values[name]) for name in parameter_names]
+    gds_files = []
+    for values in product(*parameter_sweeps):
+        geometry_kwargs = dict(zip(parameter_names, values, strict=True))
+        gds_files.append(pillar_geometry(directory=directory, **geometry_kwargs))
+
+    return gds_files
 # %%

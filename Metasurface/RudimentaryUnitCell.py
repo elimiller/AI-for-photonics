@@ -27,7 +27,7 @@ import gdsfactory as gf
 from gdsfactory.technology import LayerLevel, LayerStack
 from gplugins.gmeep.get_meep_geometry import get_meep_geometry_from_component
 import os
-
+from collections.abc import Callable, Iterable
 from Unit_cell_generation import*
 
 
