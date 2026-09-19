@@ -179,6 +179,7 @@ structure = td.Structure(geometry = td.GeometryGroup(geometries = test_cell),med
 all_struct = np.concatenate(list(structDict.values())).tolist()
 all_mon = np.concatenate(list(monDict.values())).tolist()
 all_src = np.concatenate(list(srcDict.values())).tolist()
+
 init_sim = td.Simulation(
                 size=[size_x, size_y, size_z],
                 center=[center_x, center_y, center_z],
