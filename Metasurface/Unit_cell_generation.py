@@ -35,6 +35,23 @@ if __name__ == "__main__":
     example_cell = c_shape_unit_cell(20, 2, 45)
     example_cell.write_gds("demo_unit_cell.gds")
 # %% Make gds library for actual project
+@gf.cell(overwrite_existing=True)
+def elliptical_pillar_component(
+    r_x: float, r_y: float, theta: float
+) -> gf.Component:
+    """Create one named elliptical-pillar layout cell.
+
+    Recreating an identical parameter set replaces the existing live cell rather
+    than retaining another cell with the same name.
+    """
+    pillar = gf.Component()
+    ellipse = pillar.add_ref(
+        gf.components.ellipse(radii=(r_x, r_y), layer=(1, 0))
+    )
+    ellipse.drotate(theta)
+    return pillar
+
+
 def elliptical_pillar_gds(r_x: float, r_y: float, theta: float, directory: Path) -> Path:
     """Write one rotated elliptical pillar GDS to ``directory``.
 
@@ -52,13 +69,13 @@ def elliptical_pillar_gds(r_x: float, r_y: float, theta: float, directory: Path)
     if not directory.is_dir():
         raise NotADirectoryError(f"GDS output directory does not exist: {directory}")
 
-    pillar = gf.Component(f"elliptical_pillar_rx_{r_x}_ry_{r_y}_theta_{theta}")
-    ellipse = pillar.add_ref(
-        gf.components.ellipse(radii=(r_x, r_y), layer=(1, 0))
-    )
-    ellipse.drotate(theta)
+    pillar = elliptical_pillar_component(r_x=r_x, r_y=r_y, theta=theta)
 
     gds_path = directory / f"elliptical_pillar_rx_{r_x}_ry_{r_y}_theta_{theta}.gds"
+    # The filename is the geometry identifier for this library.  Re-generating
+    # the same geometry intentionally replaces its previous GDS export.
+    if gds_path.exists():
+        gds_path.unlink()
     pillar.write_gds(gds_path)
     return gds_path
 # %% Generic gds library sweep saver function
@@ -113,7 +130,13 @@ def generate_unit_cell_gds_lib(
     parameter_names = list(parameter_values)
     parameter_sweeps = [list(parameter_values[name]) for name in parameter_names]
     gds_files = []
+    seen_parameter_combinations: set[tuple[object, ...]] = set()
     for values in product(*parameter_sweeps):
+        # Repeated parameter combinations identify the same output filename.
+        # Generate it once; that first export replaces any existing file on disk.
+        if values in seen_parameter_combinations:
+            continue
+        seen_parameter_combinations.add(values)
         geometry_kwargs = dict(zip(parameter_names, values, strict=True))
         gds_files.append(pillar_geometry(directory=directory, **geometry_kwargs))
 

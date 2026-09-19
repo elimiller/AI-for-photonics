@@ -1,0 +1,195 @@
+{
+  "metadata": {
+    "schema_version": 1,
+    "wavelength_um": 0.532,
+    "length_unit": "um",
+    "source_current_component": "Ex",
+    "polarization": "p/TM",
+    "incident_plane": "x-z",
+    "transmission_component": "Ex",
+    "complex_value_format": {
+      "real": "float",
+      "imag": "float"
+    }
+  },
+  "references": [
+    {
+      "simulation_condition": {
+        "pillar_height_um": 0.85,
+        "period_um": 0.6,
+        "incident_angle_deg": 0.0
+      },
+      "transmission_plane_fields": {
+        "ex": {
+          "real": -0.7011387403234309,
+          "imag": 2.359036119966815
+        },
+        "ez": {
+          "real": -4.530155602315306e-06,
+          "imag": 3.0113809413830246e-05
+        }
+      },
+      "p_polarization_sanity_check": {
+        "expected_ez_over_ex": -0.0,
+        "measured_ez_over_ex": {
+          "real": 1.225361695021643e-05,
+          "imag": -1.7216056660558533e-06
+        },
+        "absolute_error": 1.237396680260728e-05
+      }
+    },
+    {
+      "simulation_condition": {
+        "pillar_height_um": 0.85,
+        "period_um": 0.6,
+        "incident_angle_deg": 10
+      },
+      "transmission_plane_fields": {
+        "ex": {
+          "real": 0.971087409662698,
+          "imag": 4.416030683363431
+        },
+        "ez": {
+          "real": -0.17127231386154732,
+          "imag": -0.7839405337602096
+        }
+      },
+      "p_polarization_sanity_check": {
+        "expected_ez_over_ex": -0.17632698070846498,
+        "measured_ez_over_ex": {
+          "real": -0.1774684943263079,
+          "imag": -0.00024119093975927603
+        },
+        "absolute_error": 0.0011667160790624295
+      }
+    }
+  ],
+  "results": [
+    {
+      "geometry": {
+        "geometry_type": "elliptical_pillar",
+        "gds_path": "/home/eli/Grad/AI-for-photonics/Metasurface/Unit_cell_Libraries/Ellipse Pillar SiN on SiO2 532 nm KAIST/GDS Library/elliptical_pillar_rx_0.25_ry_0.25_theta_0.gds",
+        "radius_x_um": 0.25,
+        "radius_y_um": 0.25,
+        "rotation_deg": 0.0
+      },
+      "simulation_condition": {
+        "pillar_height_um": 0.85,
+        "period_um": 0.6,
+        "incident_angle_deg": 0.0
+      },
+      "reference_transmission_plane_fields": {
+        "ex": {
+          "real": -0.7011387403234309,
+          "imag": 2.359036119966815
+        },
+        "ez": {
+          "real": -4.530155602315306e-06,
+          "imag": 3.0113809413830246e-05
+        }
+      },
+      "pillar_transmission_plane_fields": {
+        "ex": {
+          "real": -0.4437832263458116,
+          "imag": -1.613648752973603
+        },
+        "ez": {
+          "real": 0.0002897497333687049,
+          "imag": -0.00039435341670576696
+        }
+      },
+      "normalized_response": {
+        "complex_transmission_coefficient": {
+          "real": -0.5771348587156138,
+          "imag": 0.35965317656702667
+        },
+        "power_transmission": 0.4624350525594443,
+        "phase_deg": 148.07007414675965
+      }
+    },
+    {
+      "geometry": {
+        "geometry_type": "elliptical_pillar",
+        "gds_path": "/home/eli/Grad/AI-for-photonics/Metasurface/Unit_cell_Libraries/Ellipse Pillar SiN on SiO2 532 nm KAIST/GDS Library/elliptical_pillar_rx_0.25_ry_0.25_theta_0.gds",
+        "radius_x_um": 0.25,
+        "radius_y_um": 0.25,
+        "rotation_deg": 0.0
+      },
+      "simulation_condition": {
+        "pillar_height_um": 0.85,
+        "period_um": 0.6,
+        "incident_angle_deg": 10
+      },
+      "reference_transmission_plane_fields": {
+        "ex": {
+          "real": 0.971087409662698,
+          "imag": 4.416030683363431
+        },
+        "ez": {
+          "real": -0.17127231386154732,
+          "imag": -0.7839405337602096
+        }
+      },
+      "pillar_transmission_plane_fields": {
+        "ex": {
+          "real": -2.88630206040047,
+          "imag": -2.353057892602334
+        },
+        "ez": {
+          "real": 0.5586770184473,
+          "imag": 0.6886492012342543
+        }
+      },
+      "normalized_response": {
+        "complex_transmission_coefficient": {
+          "real": -0.6453634059371425,
+          "imag": 0.5116807251250508
+        },
+        "power_transmission": 0.6783110901872867,
+        "phase_deg": 141.59062299656267
+      }
+    },
+    {
+      "geometry": {
+        "geometry_type": "elliptical_pillar",
+        "gds_path": "/home/eli/Grad/AI-for-photonics/Metasurface/Unit_cell_Libraries/Ellipse Pillar SiN on SiO2 532 nm KAIST/GDS Library/elliptical_pillar_rx_0.3_ry_0.25_theta_0.gds",
+        "radius_x_um": 0.3,
+        "radius_y_um": 0.25,
+        "rotation_deg": 0.0
+      },
+      "simulation_condition": {
+        "pillar_height_um": 0.85,
+        "period_um": 0.6,
+        "incident_angle_deg": 10
+      },
+      "reference_transmission_plane_fields": {
+        "ex": {
+          "real": 0.971087409662698,
+          "imag": 4.416030683363431
+        },
+        "ez": {
+          "real": -0.17127231386154732,
+          "imag": -0.7839405337602096
+        }
+      },
+      "pillar_transmission_plane_fields": {
+        "ex": {
+          "real": -0.7305090751459338,
+          "imag": -2.599529169395113
+        },
+        "ez": {
+          "real": -0.2775459752745571,
+          "imag": 0.8111562987754548
+        }
+      },
+      "normalized_response": {
+        "complex_transmission_coefficient": {
+          "real": -0.5962036475215112,
+          "imag": 0.034316613789330756
+        },
+        "power_transmission": 0.35663641929992046,
+        "phase_deg": 176.70577306329812
+      }
+    }
+  ]
+}
