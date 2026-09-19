@@ -61,7 +61,7 @@ def stupidFunction(
     temp_cell = temp_cell.copy(name=cell_name, translation=(dx, dy))
 
     return temp_cell
-# %% Inpute params
+# %% Inpute params from meep
 r_x_list = [0.25,0.3] # Will just do first radius
 tidy3d_r_x = r_x_list[0]
 r_y_list = [0.25]
@@ -78,6 +78,18 @@ resolution = 50               # pixels / um; increase after convergence test
 dpml = 0.8                  # z-only absorbing boundary thickness [um]
 air_padding = 1.0             # air above and below the structure [um]
 substrate_h = 1.0 
+z_min = -0.5 * cell_z + dpml
+z_max = 0.5 * cell_z - dpml
+cell_z = substrate_h + pillar_h + 2 * air_padding + 2 * dpml
+cell = mp.Vector3(period, period, cell_z)
+monitor_z = 0.5 * cell_z - dpml - 0.35
+source_z = -0.5 * cell_z + dpml + 0.35
+incident_angle_rad = np.deg2rad(incident_angle_deg)
+
+    # Meep's k_point is in inverse-layout units.  The incident medium is air,
+    # so |k| = fcen and kx = fcen * sin(theta).
+k_point = mp.Vector3(fcen * np.sin(incident_angle_rad), 0, 0)
+# %% Import params tidy3d
 # %% Generate Monitors
 mon_mode_bar = td.ModeMonitor(
             center=[size_x / 2 - pml_spacing_x, -ring_radius / 2, 0],
@@ -192,6 +204,14 @@ init_sim = td.Simulation(
                 run_time=run_time,
                 subpixel=True,
             )  # type: ignore
-# %% Run sim
+# %% Send sim to server
+estimated_cost = float(web.estimate_cost(init_job.task_id))  # type: ignore
+print(f"Estimated maximum cost per sim: {estimated_cost:.3f} Flex Credits")
+init_job = web.Job(
+                simulation=init_sim,
+                task_name=task_name + "_setup_visualize",
+                folder_name=save_folder + "cost_estimate",
+                verbose=True,
+            )  # type: ignor
 
 # ## Plot field profile of first sim
