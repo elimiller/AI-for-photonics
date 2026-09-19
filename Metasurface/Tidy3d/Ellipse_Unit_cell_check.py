@@ -10,7 +10,7 @@ import matplotlib
 import matplotlib.pylab as plt
 import os
 import json
-import gdstk
+import gdstk as gd
 import tidy3d as td
 import tidy3d.web as web
 from scipy.optimize import fsolve
@@ -23,7 +23,44 @@ import matplotlib.pyplot as plt
 import tidy3d as td
 from tidy3d.plugins.mode.web import run as run_mode_solver
 from tidy3d.plugins.dispersion import AdvancedFastFitterParam, FastDispersionFitter
+import gdsfactory as gf
+# %% Functions
+def stupidFunction(
+    gf_comp: gf.Component,
+    temp_path: str,
+    gf_name: str,
+    cell_name: str,
+    dx: float = 0,
+    dy: float = 0,
+    filter_layer: bool = False,
+):
+    """
+    Function takes a gdsfactory component and converts it to a gdstk cell with option for translation.
+    This is somewhat dumb, but needed since tidy3d only takes gdstk cells for import.
+    Returns a gdstk cell.
+    """
 
+    # NOW DO THE NONSENSE DANCE TO GET A GDSTK CELL SO WE CAN IMPORT IT; ONE DAY USE GDSFACTORY PLUG IN TODO TODO TODO
+
+    # export to temp
+    gf_comp.write_gds(temp_path + "temp.gds")
+
+    ### FOR THE MEANWHILE DO A DUMB AND IMPORT INTO GDSTK FOR CELL MANAGEMENT ### TODO
+    temp_cell = gdstk.Cell(cell_name + "_temp")
+
+    if filter_layer:
+        importTemp = gdstk.read_gds(temp_path + "temp.gds", filter={(1, 0)})
+    else:
+        importTemp = gdstk.read_gds(temp_path + "temp.gds")
+    gf_cell = importTemp[gf_name]
+
+    for ii in gf_cell.get_polygons():
+        temp_cell.add(ii)
+
+    # shift to compensate for any shifts or positioning considerations
+    temp_cell = temp_cell.copy(name=cell_name, translation=(dx, dy))
+
+    return temp_cell
 # %% Inpute params
 r_x_list = [0.25,0.3] # Will just do first radius
 tidy3d_r_x = r_x_list[0]
@@ -116,8 +153,28 @@ grid_spec = td.GridSpec(grid_x = td.AutoGrid(min_steps_per_wvl = 16,max_scale = 
                                             # , override_structures = [override_structure]
                                             ,override_structures = [box_structure]
 )
-# %% Bring proper gds file
 
+# %% Bring proper gds file
+path = os.getcwd()
+gds_path = path + "/Unit_cell_Libraries/Ellipse Pillar SiN on SiO2 532 nm KAIST/GDS Library/elliptical_pillar_rx_0.25_ry_0.25_theta_0.gds"
+component = gf.import_gds(gds_path)
+# %% Get cell name
+
+library = gd.read_gds(gds_path)
+
+for cell in library.cells:
+    print(cell.name)
+# %% Turn this to tidy3d geometry
+temp_cell = gd.Cell('gdstk version of elliptical_pillar_rx_0.25_ry_0.25_theta_0')
+importTemp = gd.read_gds(gds_path)
+gf_cell = importTemp['elliptical_pillar_rx_0.25_ry_0.25_theta_0']
+for ii in gf_cell.get_polygons():
+        temp_cell.add(ii)
+
+    # shift to compensate for any shifts or positioning considerations
+test_cell = temp_cell.copy(name='test pillar')
+
+structure = td.Structure(geometry = td.GeometryGroup(geometries = test_cell),medium = mat_device,name = 'Override Structure')
 # %% Build sim 
 all_struct = np.concatenate(list(structDict.values())).tolist()
 all_mon = np.concatenate(list(monDict.values())).tolist()
@@ -130,7 +187,7 @@ init_sim = td.Simulation(
                 sources=all_src,
                 monitors=all_mon,
                 medium=mat_cladding,
-                boundary_spec=td.BoundarySpec(x=td.Boundary.absorber(), y=td.Boundary.absorber(), z=td.Boundary.absorber()),
+                boundary_spec=td.BoundarySpec(x=td.Boundary.absorber(), y=td.Boundary.absorber(), z=td.pml()),
                 run_time=run_time,
                 subpixel=True,
             )  # type: ignore

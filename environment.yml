@@ -15,6 +15,7 @@ dependencies:
     - gdsfactory
     - tidy3d
     - gplugins
+    - gdstk
   
 
 
