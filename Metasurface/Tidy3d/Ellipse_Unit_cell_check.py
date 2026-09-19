@@ -11,6 +11,7 @@ import matplotlib.pylab as plt
 import os
 import json
 import gdstk as gd
+from pathlib import Path
 import tidy3d as td
 import tidy3d.web as web
 from scipy.optimize import fsolve
@@ -46,12 +47,12 @@ def stupidFunction(
     gf_comp.write_gds(temp_path + "temp.gds")
 
     ### FOR THE MEANWHILE DO A DUMB AND IMPORT INTO GDSTK FOR CELL MANAGEMENT ### TODO
-    temp_cell = gdstk.Cell(cell_name + "_temp")
+    temp_cell = gd.Cell(cell_name + "_temp")
 
     if filter_layer:
-        importTemp = gdstk.read_gds(temp_path + "temp.gds", filter={(1, 0)})
+        importTemp = gd.read_gds(temp_path + "temp.gds", filter={(1, 0)})
     else:
-        importTemp = gdstk.read_gds(temp_path + "temp.gds")
+        importTemp = gd.read_gds(temp_path + "temp.gds")
     gf_cell = importTemp[gf_name]
 
     for ii in gf_cell.get_polygons():
@@ -62,156 +63,235 @@ def stupidFunction(
 
     return temp_cell
 # %% Inpute params from meep
-r_x_list = [0.25,0.3] # Will just do first radius
-tidy3d_r_x = r_x_list[0]
+r_x_list = [0.25, 0.3]
 r_y_list = [0.25]
 theta_list = [0]
 wavelength = 0.532             # design wavelength [um]
-period_list = [0.60]                 # square-lattice pitch [um]
+period_list = [0.60]            # square-lattice pitch [um]
 pillar_h_list = [0.85]
-incident_angle_list = [10]      # polar angle in degrees; tilt is in the x-z plane    
+incident_angle_list = [10]      # polar angle in degrees; tilt is in the x-z plane
 RUN_SIMULATION = True
-PLOT_FIRST_PILLAR_FIELD_PROFILE = True  # Set False for library sweeps without plots.
+PLOT_FIRST_PILLAR_FIELD_PROFILE = True
 n_SiN = 2.0
 n_sio2 = 1.46
-resolution = 50               # pixels / um; increase after convergence test
-dpml = 0.8                  # z-only absorbing boundary thickness [um]
-air_padding = 1.0             # air above and below the structure [um]
-substrate_h = 1.0 
-z_min = -0.5 * cell_z + dpml
-z_max = 0.5 * cell_z - dpml
-cell_z = substrate_h + pillar_h + 2 * air_padding + 2 * dpml
-cell = mp.Vector3(period, period, cell_z)
-monitor_z = 0.5 * cell_z - dpml - 0.35
-source_z = -0.5 * cell_z + dpml + 0.35
+resolution = 50                 # Meep pixels / um; mapped below to Tidy3D steps / wavelength
+dpml = 0.8                      # z-only absorbing-boundary spacing [um]
+air_padding = 1.0               # air above and below the structure [um]
+substrate_h = 1.0
+
+# This check simulation uses the first value of each sweep list.
+r_x = r_x_list[0]
+r_y = r_y_list[0]
+theta = theta_list[0]
+period = period_list[0]
+pillar_h = pillar_h_list[0]
+incident_angle_deg = incident_angle_list[0]
 incident_angle_rad = np.deg2rad(incident_angle_deg)
 
-    # Meep's k_point is in inverse-layout units.  The incident medium is air,
-    # so |k| = fcen and kx = fcen * sin(theta).
-k_point = mp.Vector3(fcen * np.sin(incident_angle_rad), 0, 0)
+# Tidy3D uses micrometers for length and Hz for frequency.
+fcen = td.C_0 / wavelength
+fwidth = 0.05 * fcen
+cell_z = substrate_h + pillar_h + 2 * air_padding + 2 * dpml
+sim_size = (period, period, cell_z)
+z_min = -0.5 * cell_z + dpml
+z_max = 0.5 * cell_z - dpml
+monitor_z = 0.5 * cell_z - dpml - 0.35
+source_z = -0.5 * cell_z + dpml + 0.35
+run_time = 200 / fcen
 # %% Import params tidy3d
+air = td.Medium(permittivity=1.0)
+si_n = td.Medium(permittivity=n_SiN**2)
+sio2 = td.Medium(permittivity=n_sio2**2)
+min_steps_per_wvl = max(10, int(round(resolution * wavelength)))
 # %% Generate Monitors
-mon_mode_bar = td.ModeMonitor(
-            center=[size_x / 2 - pml_spacing_x, -ring_radius / 2, 0],
-            size=[0, mon_w, mon_h],
-            freqs=freq_range,
-            mode_spec=mode_spec,
-            name="mode_monitor_bar",
-        )  # type: ignore
-mon_flux_bar = td.FluxMonitor(
-            center=[size_x / 2 - pml_spacing_x, -ring_radius / 2, 0],
-            size=[0, mon_w, mon_h],
-            freqs=freq_range,
-            name="flux_monitor_bar",
-        )  # type: ignore
-mon_mode_cross = td.ModeMonitor(
-            center=[
-                ring_radius + coupling_length / 2,
-                size_y / 2 - pml_spacing_y,
-                0,
-            ],
-            size=[mon_w, 0, mon_h],
-            freqs=freq_range,
-            mode_spec=mode_spec,
-            name="mode_monitor_cross",
-        )  # type: ignore
-
-mon_flux_cross = td.FluxMonitor(
-            center=[
-                ring_radius + coupling_length / 2,
-                size_y / 2 - pml_spacing_y,
-                0,
-            ],
-            size=[mon_w, 0, mon_h],
-            freqs=freq_range,
-            name="flux_monitor_cross",
-        )  # type: ignore
-
-mon_field_xy = td.FieldMonitor(
-            center=[center_x, center_y, 0],
-            size=(td.inf, td.inf, 0),
-            freqs=freq_c,
-            name="field_monitor_xy",
-            interval_space=(10, 10, 10),
-        )  # type: ignore
-
-monDict = {
-            "mon_mode_bar": [mon_mode_bar],
-            "mon_mode_cross": [mon_mode_cross],
-            "mon_flux_bar": [mon_flux_bar],
-            "mon_flux_cross": [mon_flux_cross],
-            "mon_field_xy": [mon_field_xy],
-        }
+transmission_monitor = td.FluxMonitor(
+    center=(0, 0, monitor_z),
+    size=(td.inf, td.inf, 0),
+    freqs=[fcen],
+    name="transmission_monitor",
+)
+field_monitor_xz = td.FieldMonitor(
+    center=(0, 0, 0),
+    size=(period, 0, cell_z - 2 * dpml),
+    freqs=[fcen],
+    fields=["Ex", "Ez"],
+    name="field_monitor_xz",
+)
+monDict = {"unit_cell_monitors": [transmission_monitor, field_monitor_xz]}
 # %% Generate Inputs
-mode_input = td.ModeSource(
-            center=[-size_x / 2 + pml_spacing_x, -ring_radius / 2, 0],
-            size=[0, mon_w, mon_h],
-            source_time=td.GaussianPulse(
-                freq0=freq_c,
-                fwidth=freq_bw,
-            ),  # type: ignore
-            direction="+",
-            mode_index=mode_index,
-        )  # type: ignore
-mode_input_src = [mode_input]
-
-srcDict = {
-            "mode_input_src": mode_input_src,
-        }
+plane_wave_input = td.PlaneWave(
+    center=(0, 0, source_z),
+    size=(td.inf, td.inf, 0),
+    source_time=td.GaussianPulse(freq0=fcen, fwidth=fwidth),
+    direction="+",
+    angle_theta=incident_angle_rad,
+    angle_phi=0.0,
+    pol_angle=0.0,  # p/TM: Ex at normal incidence; Ex and Ez for an x-z tilt.
+    angular_spec=td.FixedInPlaneKSpec(),
+    name="p_polarized_plane_wave",
+)
+srcDict = {"plane_wave_source": [plane_wave_input]}
 # %% Grid Spec
-grid_spec = td.GridSpec(grid_x = td.AutoGrid(min_steps_per_wvl = 16,max_scale = 1.9)
-                                            , grid_y = td.AutoGrid(min_steps_per_wvl = 16, max_scale = 1.9)
-                                            , grid_z = td.AutoGrid(min_steps_per_wvl = 16, max_scale = 1.9)
-                                            # , override_structures = [override_structure]
-                                            ,override_structures = [box_structure]
+grid_spec = td.GridSpec.auto(
+    min_steps_per_wvl=min_steps_per_wvl,
+    wavelength=wavelength,
 )
 
 # %% Bring proper gds file
-path = os.getcwd()
-gds_path = path + "/Unit_cell_Libraries/Ellipse Pillar SiN on SiO2 532 nm KAIST/GDS Library/elliptical_pillar_rx_0.25_ry_0.25_theta_0.gds"
-component = gf.import_gds(gds_path)
+gds_directory = next(
+    (
+        candidate / "Unit_cell_Libraries" / "Ellipse Pillar SiN on SiO2 532 nm KAIST" / "GDS Library"
+        for candidate in (Path.cwd(), *Path.cwd().parents, Path.cwd() / "Metasurface")
+        if (candidate / "Unit_cell_Libraries").is_dir()
+    ),
+    None,
+)
+if gds_directory is None:
+    raise FileNotFoundError("Could not locate the Metasurface/Unit_cell_Libraries directory.")
+gds_path = gds_directory / f"elliptical_pillar_rx_{r_x}_ry_{r_y}_theta_{theta}.gds"
 # %% Get cell name
-
 library = gd.read_gds(gds_path)
-
-for cell in library.cells:
-    print(cell.name)
+gds_cells = [
+    cell for cell in library.top_level()
+    if not cell.name.startswith("$$$CONTEXT_INFO$$$")
+]
+if len(gds_cells) != 1:
+    raise ValueError(f"Expected one physical top cell in {gds_path}, found {len(gds_cells)}.")
+gds_cell = gds_cells[0]
+print(gds_cell.name)
 # %% Turn this to tidy3d geometry
-temp_cell = gd.Cell('gdstk version of elliptical_pillar_rx_0.25_ry_0.25_theta_0')
-importTemp = gd.read_gds(gds_path)
-gf_cell = importTemp['elliptical_pillar_rx_0.25_ry_0.25_theta_0']
-for ii in gf_cell.get_polygons():
-        temp_cell.add(ii)
-
-    # shift to compensate for any shifts or positioning considerations
-test_cell = temp_cell.copy(name='test pillar')
-
-structure = td.Structure(geometry = td.GeometryGroup(geometries = test_cell),medium = mat_device,name = 'Override Structure')
-# %% Build sim 
+pillar_geometries = td.PolySlab.from_gds(
+    gds_cell=gds_cell,
+    axis=2,
+    slab_bounds=(0, pillar_h),
+    gds_layer=1,
+    gds_dtype=0,
+    gds_scale=1.0,
+)
+pillar_structure = td.Structure(
+    geometry=td.GeometryGroup(geometries=pillar_geometries),
+    medium=si_n,
+    name="sin_ellipse_pillar",
+)
+substrate_structure = td.Structure(
+    geometry=td.Box(
+        center=(0, 0, -substrate_h / 2),
+        size=(td.inf, td.inf, substrate_h),
+    ),
+    medium=sio2,
+    name="sio2_substrate",
+)
+structDict = {"unit_cell_structures": [substrate_structure, pillar_structure]}
+# %% Build sim
 all_struct = np.concatenate(list(structDict.values())).tolist()
 all_mon = np.concatenate(list(monDict.values())).tolist()
 all_src = np.concatenate(list(srcDict.values())).tolist()
 
 init_sim = td.Simulation(
-                size=[size_x, size_y, size_z],
-                center=[center_x, center_y, center_z],
-                grid_spec=grid_spec,
-                structures=all_struct,
-                sources=all_src,
-                monitors=all_mon,
-                medium=mat_cladding,
-                boundary_spec=td.BoundarySpec(x=td.Boundary.absorber(), y=td.Boundary.absorber(), z=td.pml()),
-                run_time=run_time,
-                subpixel=True,
-            )  # type: ignore
+    size=sim_size,
+    center=(0, 0, 0),
+    grid_spec=grid_spec,
+    structures=all_struct,
+    sources=all_src,
+    monitors=all_mon,
+    medium=air,
+    boundary_spec=td.BoundarySpec(
+        x=td.Boundary.bloch_from_source(
+            source=plane_wave_input, domain_size=period, axis=0, medium=air
+        ),
+        y=td.Boundary.bloch_from_source(
+            source=plane_wave_input, domain_size=period, axis=1, medium=air
+        ),
+        z=td.Boundary.pml(),
+    ),
+    run_time=run_time,
+    subpixel=True,
+)
 # %% Send sim to server
-estimated_cost = float(web.estimate_cost(init_job.task_id))  # type: ignore
-print(f"Estimated maximum cost per sim: {estimated_cost:.3f} Flex Credits")
 init_job = web.Job(
-                simulation=init_sim,
-                task_name=task_name + "_setup_visualize",
-                folder_name=save_folder + "cost_estimate",
-                verbose=True,
-            )  # type: ignor
+    simulation=init_sim,
+    task_name="ellipse_unit_cell_check",
+    folder_name="metasurface_unit_cell",
+    verbose=True,
+)
+estimated_cost = init_job.estimate_cost()
+print(f"Estimated maximum cost per sim: {estimated_cost:.3f} Flex Credits")
 
 # ## Plot field profile of first sim
+
+# %%
+import tidy3d.web as web
+web.test()
+# %% Extract transmission and phase
+if RUN_SIMULATION:
+    # Use the identical source, boundaries, substrate, and monitors without the
+    # pillar as the reference.  This removes propagation and interface phase.
+    reference_sim = init_sim.updated_copy(structures=[substrate_structure])
+    reference_job = web.Job(
+        simulation=reference_sim,
+        task_name="ellipse_unit_cell_reference",
+        folder_name="metasurface_unit_cell",
+        verbose=True,
+    )
+
+    data_directory = gds_directory.parent / "Library Data"
+    if not data_directory.is_dir():
+        raise FileNotFoundError(f"Expected existing data directory: {data_directory}")
+
+    reference_data = reference_job.run(
+        path=data_directory / "ellipse_unit_cell_reference.hdf5"
+    )
+    pillar_data = init_job.run(
+        path=data_directory / "ellipse_unit_cell_pillar.hdf5"
+    )
+
+    reference_flux = float(
+        reference_data["transmission_monitor"].flux.sel(f=fcen, method="nearest").item()
+    )
+    pillar_flux = float(
+        pillar_data["transmission_monitor"].flux.sel(f=fcen, method="nearest").item()
+    )
+    power_transmission = pillar_flux / reference_flux
+
+    # The ratio of complex Ex fields at the transmission plane is the
+    # zero-order complex transmission coefficient.  Averaging x samples the
+    # full unit-cell field; the common Bloch phase cancels in the ratio.
+    reference_ex = complex(
+        reference_data["field_monitor_xz"].Ex
+        .sel(f=fcen, z=monitor_z, method="nearest")
+        .mean()
+        .item()
+    )
+    pillar_ex = complex(
+        pillar_data["field_monitor_xz"].Ex
+        .sel(f=fcen, z=monitor_z, method="nearest")
+        .mean()
+        .item()
+    )
+    complex_transmission = pillar_ex / reference_ex
+    transmission_phase_rad = float(np.angle(complex_transmission))
+    transmission_phase_deg = float(np.degrees(transmission_phase_rad) % 360)
+
+    transmission_results = {
+        "power_transmission": power_transmission,
+        "complex_transmission": complex_transmission,
+        "phase_rad": transmission_phase_rad,
+        "phase_deg": transmission_phase_deg,
+    }
+    print(f"Power transmission: {power_transmission:.6f}")
+    print(f"Transmission phase: {transmission_phase_rad:.6f} rad ({transmission_phase_deg:.3f} deg)")
+
+    if PLOT_FIRST_PILLAR_FIELD_PROFILE:
+        ex_profile = (
+            pillar_data["field_monitor_xz"].Ex
+            .sel(f=fcen, method="nearest")
+            .squeeze(drop=True)
+        )
+        _, ax = plt.subplots()
+        np.abs(ex_profile).plot(x="x", y="z", ax=ax, cmap="magma")
+        ax.set_title("|Ex| field profile: elliptical-pillar unit cell")
+        ax.axhline(monitor_z, color="cyan", linestyle="--", linewidth=1, label="transmission monitor")
+        ax.legend()
+        plt.show()
+
+# %%
