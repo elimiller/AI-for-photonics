@@ -10,6 +10,7 @@ from gdsfactory.technology import LayerLevel, LayerStack
 from gplugins.gmeep.get_meep_geometry import get_meep_geometry_from_component
 from inspect import Parameter, signature
 from itertools import product
+from functools import partial
 import os
 import sys
 from pathlib import Path
@@ -55,6 +56,32 @@ gds_files = generate_unit_cell_gds_lib(
 PILLAR_LAYER = (1, 0)
 POLARIZATION = mp.Ex # TM or P polarized
 fcen = 1 / wavelength
+MEEP_PROGRESS_INTERVAL = 5.0  # simulation-time units between progress messages
+
+# %% Fucntion definitions
+def log_decay_progress(
+    running_sim: mp.Simulation,
+    monitor_point: mp.Vector3,
+    progress_state: dict,
+    wall_clock_start: float,
+) -> None:
+    field_magnitude = float(
+        abs(running_sim.get_field_point(POLARIZATION, monitor_point))
+    )
+    progress_state["peak_field"] = max(
+        progress_state["peak_field"], field_magnitude
+    )
+    peak_field = progress_state["peak_field"]
+    relative_field = field_magnitude / peak_field if peak_field else 0.0
+    if mp.am_master():
+        print(
+            f"[Meep decay] t={running_sim.meep_time():.2f}, "
+            f"wall={time.perf_counter() - wall_clock_start:.1f}s, "
+            f"field/peak={relative_field:.3e}, threshold=1.000e-03",
+            flush=True,
+        )
+# %% Run an individual sim
+
 def run_unit_cell(
     extra_geometry: list[mp.GeometricObject],
     pillar_h: float,
@@ -102,10 +129,143 @@ def run_unit_cell(
         center=mp.Vector3(0, 0, monitor_z),
         size=mp.Vector3(period, period, 0),
     )
-    dft = sim.add_dft_fields([POLARIZATION], fcen, 0, 1, where=transmission_plane)
+    dft = sim.add_dft_fields([mp.Ex,mp.Ey,mp.Ez], fcen, 0, 1, where=transmission_plane)
+
+    progress_state = {"peak_field": 0.0}
+    wall_clock_start = time.perf_counter()
+    monitor_point = mp.Vector3(0, 0, monitor_z)
+
     sim.run(
+        mp.at_every(
+            MEEP_PROGRESS_INTERVAL,
+            partial(
+                log_decay_progress,
+                monitor_point=monitor_point,
+                progress_state=progress_state,
+                wall_clock_start=wall_clock_start,
+            ),
+        ),
         until_after_sources=mp.stop_when_fields_decayed(
             50, POLARIZATION, mp.Vector3(0, 0, monitor_z), 1e-3
         )
     )
-    return np.mean(sim.get_dft_array(dft, POLARIZATION, 0))
+    ex = np.mean(sim.get_dft_array(dft, mp.Ex, 0))
+    ey = np.mean(sim.get_dft_array(dft,mp.Ey,0))
+    ez = np.mean(sim.get_dft_array(dft,mp.Ez,0))
+    return {
+        'ex' : ex,
+        'ey' : ey,
+        'ez' : ez
+    }
+
+def run_reference_unit_cell(
+    pillar_h: float,
+    period: float,
+    incident_angle_deg: float,
+) -> dict[str, complex | float]:
+    """Run the bare-substrate reference for one height/period/angle condition."""
+    return run_unit_cell([], pillar_h, period, incident_angle_deg)
+
+# %% Upload GDS to sim
+def calculate_transmissions(
+    reference_fields: dict[str, complex],
+    pillar_fields: dict[str, complex],
+) -> dict[str, object]:
+    """Store real/imaginary field responses and normalized power transmission."""
+    coefficients = {
+        component: pillar_fields[component] / reference_fields[component]
+        for component in ("ex", "ey", "ez")
+    }
+    return {
+        **{
+            component: {
+                "real": float(coefficient.real),
+                "imag": float(coefficient.imag),
+            }
+            for component, coefficient in coefficients.items()
+        },
+        "tm": {
+            "real": float(coefficients["ex"].real),
+            "imag": float(coefficients["ex"].imag),
+        },
+        "te": {
+            "real": float(coefficients["ey"].real),
+            "imag": float(coefficients["ey"].imag),
+        },
+        "power_flux_transmission": float(
+            sum(abs(coefficient) ** 2 for coefficient in coefficients.values())
+        ),
+    }
+
+def ellipse_geometry_metadata(file_path: Path) -> dict[str, object]:
+    """Return labeled ellipse parameters encoded in a generated GDS filename."""
+    match = re.fullmatch(
+        r"elliptical_pillar_rx_(.+)_ry_(.+)_theta_(.+)", file_path.stem
+    )
+    metadata: dict[str, object] = {
+        "geometry_type": "elliptical_pillar",
+        "gds_path": file_path,
+    }
+    if match is not None:
+        radius_x, radius_y, rotation_deg = match.groups()
+        metadata.update(
+            {
+                "radius_x_um": float(radius_x),
+                "radius_y_um": float(radius_y),
+                "rotation_deg": float(rotation_deg),
+            }
+        )
+    return metadata
+ 
+def simulate_gds_unit_cell(
+    file_path: Path,
+    pillar_h: float,
+    period: float,
+    incident_angle_deg: float,
+    reference_field: dict[str, complex | float],
+    plot_field_profile: bool = False,
+) -> dict[str, object]:
+    """Simulate one pillar GDS using an already-computed bare reference."""
+    # The generator has already created a cell with this GDS top-cell name.
+    # Rename the temporary imported copy rather than treating it as a conflict.
+    unit_cell = gf.import_gds(
+        gdspath=file_path, rename_duplicated_cells=True
+    )
+    layer_stack = LayerStack(
+        layers={
+            "si_n_pillar": LayerLevel(
+                layer=PILLAR_LAYER,
+                thickness=pillar_h,
+                zmin=0.0,
+                material="si_n",
+            )
+        }
+    )
+    pillar_geometry = get_meep_geometry_from_component(
+        component=unit_cell,
+        layer_stack=layer_stack,
+        material_name_to_meep={"si_n": n_SiN},
+        wavelength=wavelength,
+    )
+    pillar_field = run_unit_cell(
+        pillar_geometry,
+        pillar_h,
+        period,
+        incident_angle_deg,
+        plot_field_profile=plot_field_profile,
+    )
+    transmission_and_phase = calculate_transmissions(
+        reference_field,
+        pillar_field,
+    )
+    return {
+        "geometry": ellipse_geometry_metadata(file_path),
+        "simulation_condition": {
+            "pillar_height_um": pillar_h,
+            "period_um": period,
+            "incident_angle_deg": incident_angle_deg,
+        },
+        "reference_transmission_plane_fields": reference_field,
+        "pillar_transmission_plane_fields": pillar_field,
+        "normalized_response": transmission_and_phase,
+    }
