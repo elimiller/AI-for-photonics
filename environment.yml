@@ -16,7 +16,6 @@ dependencies:
     - tidy3d
     - gplugins
     - gdstk
-    - --user tidy3d
   
 
 
