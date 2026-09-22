@@ -13,6 +13,7 @@ from itertools import product
 from functools import partial
 import os
 import sys
+import re
 from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -37,7 +38,7 @@ incident_angle_list = [0.0]          # polar angle in degrees; tilt is in the x-
 RUN_SIMULATION = False
 n_SiN = 2.0
 n_sio2 = 1.46
-resolution = 50               # pixels / um; increase after convergence test
+resolution = 75               # pixels / um; increase after convergence test
 dpml = 0.8                    # z-only absorbing boundary thickness [um]
 air_padding = 1.0             # air above and below the structure [um]
 substrate_h = 1.0 
@@ -58,7 +59,7 @@ POLARIZATION = mp.Ex # TM or P polarized
 fcen = 1 / wavelength
 MEEP_PROGRESS_INTERVAL = 5.0  # simulation-time units between progress messages
 
-# %% Fucntion definitions
+# %% Logging, calculation, and other functions to be used
 def log_decay_progress(
     running_sim: mp.Simulation,
     monitor_point: mp.Vector3,
@@ -80,6 +81,105 @@ def log_decay_progress(
             f"field/peak={relative_field:.3e}, threshold=1.000e-03",
             flush=True,
         )
+
+def diffraction_order(field: np.ndarray, order_x: int = 0, order_y: int = 0) -> complex:
+    """Extract one spatial Fourier coefficient from a transmission-plane field."""
+    spectrum = np.fft.fft2(field) / field.size
+    index_x = (-order_x) % field.shape[0]
+    index_y = (-order_y) % field.shape[1]
+    return complex(spectrum[index_x, index_y])
+
+def calculate_transmissions(
+    reference_fields: dict[str, np.ndarray],
+    pillar_fields: dict[str, np.ndarray],
+    incident_angle_deg: float = 0.0,
+    period: float = period_list[0],
+    order_x: int = 0,
+    order_y: int = 0,
+    medium_index: float = 1.0,
+) -> dict[str, object]:
+    """Store Cartesian responses and normalized TE/TM field coefficients.
+
+    For p-polarized (TM) light in the x-z plane, the electric field has both
+    x and z components at oblique incidence.  Projecting onto the TM unit
+    polarization includes both components in the reported ``tm`` response.
+    """
+    reference_order = {
+        component: diffraction_order(reference_fields[component], order_x, order_y)
+        for component in ("ex", "ey", "ez")
+    }
+    pillar_order = {
+        component: diffraction_order(pillar_fields[component], order_x, order_y)
+        for component in ("ex", "ey", "ez")
+    }
+    component_coefficients = {
+        component: pillar_order[component] / reference_order[component]
+        for component in ("ex", "ey", "ez")
+    }
+
+    # Meep uses k_point in cycles/length, hence the 2*pi conversion here.
+    kx = 2 * np.pi * (
+        fcen * np.sin(np.deg2rad(incident_angle_deg)) + order_x / period
+    )
+    ky = 2 * np.pi * order_y / period
+    kz_squared = (2 * np.pi * medium_index * fcen) ** 2 - kx**2 - ky**2
+    if kz_squared <= 0:
+        raise ValueError("Requested diffraction order is evanescent.")
+    kz = np.sqrt(kz_squared)
+
+    tm_vector = np.array([kz, 0.0, -kx], dtype=float)
+    tm_vector /= np.linalg.norm(tm_vector)
+    te_vector = np.array([-ky, kx, 0.0], dtype=float)
+    te_vector /= np.linalg.norm(te_vector)
+    tm_reference = np.dot(tm_vector, [reference_order["ex"], reference_order["ey"], reference_order["ez"]])
+    tm_pillar = np.dot(tm_vector, [pillar_order["ex"], pillar_order["ey"], pillar_order["ez"]])
+    te_reference = np.dot(te_vector, [reference_order["ex"], reference_order["ey"], reference_order["ez"]])
+    te_pillar = np.dot(te_vector, [pillar_order["ex"], pillar_order["ey"], pillar_order["ez"]])
+    coefficients = {
+        "tm": tm_pillar / tm_reference,
+        "te": te_pillar / te_reference if abs(te_reference) > 1e-14 else 0j,
+    }
+
+    return {
+        **{
+            component: {
+                "real": float(coefficient.real),
+                "imag": float(coefficient.imag),
+            }
+            for component, coefficient in component_coefficients.items()
+        },
+        **{
+            polarization: {
+                "real": float(coefficient.real),
+                "imag": float(coefficient.imag),
+            }
+            for polarization, coefficient in coefficients.items()
+        },
+        "power_flux_transmission": float(
+            sum(abs(coefficient) ** 2 for coefficient in coefficients.values())
+        ),
+    }
+
+
+def ellipse_geometry_metadata(file_path: Path) -> dict[str, object]:
+    """Return labeled ellipse parameters encoded in a generated GDS filename."""
+    match = re.fullmatch(
+        r"elliptical_pillar_rx_(.+)_ry_(.+)_theta_(.+)", file_path.stem
+    )
+    metadata: dict[str, object] = {
+        "geometry_type": "elliptical_pillar",
+        "gds_path": file_path,
+    }
+    if match is not None:
+        radius_x, radius_y, rotation_deg = match.groups()
+        metadata.update(
+            {
+                "radius_x_um": float(radius_x),
+                "radius_y_um": float(radius_y),
+                "rotation_deg": float(rotation_deg),
+            }
+        )
+    return metadata
 # %% Run an individual sim
 
 def run_unit_cell(
@@ -87,6 +187,8 @@ def run_unit_cell(
     pillar_h: float,
     period: float,
     incident_angle_deg: float,
+    theta_deg: float = 0.0,
+    plot_field_profile: bool = False,
 ) -> complex:
     """Return the mean complex TE field at the transmission plane."""
     cell_z = substrate_h + pillar_h + 2 * air_padding + 2 * dpml
@@ -98,6 +200,16 @@ def run_unit_cell(
     # Meep's k_point is in inverse-layout units.  The incident medium is air,
     # so |k| = fcen and kx = fcen * sin(theta).
     k_point = mp.Vector3(fcen * np.sin(incident_angle_rad), 0, 0)
+
+    # With an unrotated ellipse, the x-z plane remains a symmetry plane for
+    # all x-z incidence. The y-z plane is additionally valid at normal
+    # incidence. For an Ex source, the source is even under y -> -y and odd
+    # under x -> -x.
+    symmetries = []
+    if theta_deg == 0:
+        symmetries.append(mp.Mirror(mp.Y, phase=+1))
+        if incident_angle_deg == 0:
+            symmetries.append(mp.Mirror(mp.X, phase=-1))
 
     def bloch_phase(position: mp.Vector3) -> complex:
         """Apply the x-dependent phase of the oblique Bloch plane wave."""
@@ -122,6 +234,7 @@ def run_unit_cell(
             )
         ],
         k_point=k_point,
+        symmetries=symmetries,
         resolution=resolution,
         default_material=mp.air,
     )
@@ -149,9 +262,9 @@ def run_unit_cell(
             50, POLARIZATION, mp.Vector3(0, 0, monitor_z), 1e-3
         )
     )
-    ex = np.mean(sim.get_dft_array(dft, mp.Ex, 0))
-    ey = np.mean(sim.get_dft_array(dft,mp.Ey,0))
-    ez = np.mean(sim.get_dft_array(dft,mp.Ez,0))
+    ex = sim.get_dft_array(dft, mp.Ex, 0)
+    ey = sim.get_dft_array(dft, mp.Ey, 0)
+    ez = sim.get_dft_array(dft, mp.Ez, 0)
     return {
         'ex' : ex,
         'ey' : ey,
@@ -162,61 +275,15 @@ def run_reference_unit_cell(
     pillar_h: float,
     period: float,
     incident_angle_deg: float,
+    theta_deg: float = 0.0,
 ) -> dict[str, complex | float]:
     """Run the bare-substrate reference for one height/period/angle condition."""
-    return run_unit_cell([], pillar_h, period, incident_angle_deg)
+    return run_unit_cell([], pillar_h, period, incident_angle_deg, theta_deg)
 
-# %% Upload GDS to sim
-def calculate_transmissions(
-    reference_fields: dict[str, complex],
-    pillar_fields: dict[str, complex],
-) -> dict[str, object]:
-    """Store real/imaginary field responses and normalized power transmission."""
-    coefficients = {
-        component: pillar_fields[component] / reference_fields[component]
-        for component in ("ex", "ey", "ez")
-    }
-    return {
-        **{
-            component: {
-                "real": float(coefficient.real),
-                "imag": float(coefficient.imag),
-            }
-            for component, coefficient in coefficients.items()
-        },
-        "tm": {
-            "real": float(coefficients["ex"].real),
-            "imag": float(coefficients["ex"].imag),
-        },
-        "te": {
-            "real": float(coefficients["ey"].real),
-            "imag": float(coefficients["ey"].imag),
-        },
-        "power_flux_transmission": float(
-            sum(abs(coefficient) ** 2 for coefficient in coefficients.values())
-        ),
-    }
 
-def ellipse_geometry_metadata(file_path: Path) -> dict[str, object]:
-    """Return labeled ellipse parameters encoded in a generated GDS filename."""
-    match = re.fullmatch(
-        r"elliptical_pillar_rx_(.+)_ry_(.+)_theta_(.+)", file_path.stem
-    )
-    metadata: dict[str, object] = {
-        "geometry_type": "elliptical_pillar",
-        "gds_path": file_path,
-    }
-    if match is not None:
-        radius_x, radius_y, rotation_deg = match.groups()
-        metadata.update(
-            {
-                "radius_x_um": float(radius_x),
-                "radius_y_um": float(radius_y),
-                "rotation_deg": float(rotation_deg),
-            }
-        )
-    return metadata
  
+# %% Upload GDS to sim
+
 def simulate_gds_unit_cell(
     file_path: Path,
     pillar_h: float,
@@ -224,6 +291,7 @@ def simulate_gds_unit_cell(
     incident_angle_deg: float,
     reference_field: dict[str, complex | float],
     plot_field_profile: bool = False,
+    theta_deg: float = 0.0,
 ) -> dict[str, object]:
     """Simulate one pillar GDS using an already-computed bare reference."""
     # The generator has already created a cell with this GDS top-cell name.
@@ -252,11 +320,14 @@ def simulate_gds_unit_cell(
         pillar_h,
         period,
         incident_angle_deg,
+        theta_deg,
         plot_field_profile=plot_field_profile,
     )
     transmission_and_phase = calculate_transmissions(
         reference_field,
         pillar_field,
+        incident_angle_deg,
+        period=period,
     )
     return {
         "geometry": ellipse_geometry_metadata(file_path),
@@ -269,3 +340,4 @@ def simulate_gds_unit_cell(
         "pillar_transmission_plane_fields": pillar_field,
         "normalized_response": transmission_and_phase,
     }
+# %% Sweep sims
