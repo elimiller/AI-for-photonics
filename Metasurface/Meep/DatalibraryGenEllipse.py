@@ -16,13 +16,13 @@ from pathlib import Path
 from Unit_cell_generation import*
 gf.gpdk.PDK.activate()
 # %% Find correct directory
-path = Path(__file__).parent
+path = Path(__file__).parent.parent
 print(path)
 save_path = path / "Unit_cell_Libraries" /  'Ellipse Pillar SiN on SiO2 532 nm KAIST' 
 print(save_path)
 gds_lib_path = save_path / 'GDS Library'
 data_lib_path = save_path / 'Library Data'
-
+from Unit_cell_generation import*
 # %% Manual params
 r_x_list = [0.25]
 r_y_list = [0.25]
@@ -224,3 +224,5 @@ if RUN_SIMULATION:
         period_list,
         incident_angle_list,
     )
+
+# %%
