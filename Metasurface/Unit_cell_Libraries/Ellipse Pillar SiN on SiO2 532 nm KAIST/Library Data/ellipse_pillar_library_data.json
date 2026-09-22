@@ -1,12 +1,13 @@
 {
   "metadata": {
-    "schema_version": 1,
+    "schema_version": 2,
     "wavelength_um": 0.532,
     "length_unit": "um",
     "source_current_component": "Ex",
     "polarization": "p/TM",
     "incident_plane": "x-z",
     "transmission_component": "Ex",
+    "total_power_transmission_definition": "Total upward Poynting flux through one unit cell, normalized to the bare-substrate reference.",
     "complex_value_format": {
       "real": "float",
       "imag": "float"
@@ -42,25 +43,26 @@
       "simulation_condition": {
         "pillar_height_um": 0.85,
         "period_um": 0.6,
-        "incident_angle_deg": 10
+        "incident_angle_deg": 10.0
       },
       "transmission_plane_fields": {
+        "transmitted_flux": 8.811509121227465,
         "ex": {
-          "real": 0.971087409662698,
-          "imag": 4.416030683363431
+          "real": 1.1885661358229889,
+          "imag": 4.415504750931304
         },
         "ez": {
-          "real": -0.17127231386154732,
-          "imag": -0.7839405337602096
+          "real": -0.20957214688916798,
+          "imag": -0.7810947028705384
         }
       },
       "p_polarization_sanity_check": {
         "expected_ez_over_ex": -0.17632698070846498,
         "measured_ez_over_ex": {
-          "real": -0.1774684943263079,
-          "imag": -0.00024119093975927603
+          "real": -0.1768593426695623,
+          "imag": -0.00014423687612457112
         },
-        "absolute_error": 0.0011667160790624295
+        "absolute_error": 0.000551555558450426
       }
     }
   ],
@@ -118,35 +120,39 @@
       "simulation_condition": {
         "pillar_height_um": 0.85,
         "period_um": 0.6,
-        "incident_angle_deg": 10
+        "incident_angle_deg": 10.0
       },
       "reference_transmission_plane_fields": {
+        "transmitted_flux": 8.811509121227465,
         "ex": {
-          "real": 0.971087409662698,
-          "imag": 4.416030683363431
+          "real": 1.1885661358229889,
+          "imag": 4.415504750931304
         },
         "ez": {
-          "real": -0.17127231386154732,
-          "imag": -0.7839405337602096
+          "real": -0.20957214688916798,
+          "imag": -0.7810947028705384
         }
       },
       "pillar_transmission_plane_fields": {
+        "transmitted_flux": 7.336936331537436,
         "ex": {
-          "real": -2.88630206040047,
-          "imag": -2.353057892602334
+          "real": -3.01065646961715,
+          "imag": -1.717710920870371
         },
         "ez": {
-          "real": 0.5586770184473,
-          "imag": 0.6886492012342543
+          "real": 0.5510193683701472,
+          "imag": 0.6346775299486135
         }
       },
       "normalized_response": {
         "complex_transmission_coefficient": {
-          "real": -0.6453634059371425,
-          "imag": 0.5116807251250508
+          "real": -0.5338718559891935,
+          "imag": 0.5381297484094575
         },
-        "power_transmission": 0.6783110901872867,
-        "phase_deg": 141.59062299656267
+        "power_transmission": 0.5746027847405722,
+        "zero_order_power_transmission_estimate": 0.5746027847405722,
+        "total_power_transmission": 0.8326537748071222,
+        "phase_deg": 134.77242759580975
       }
     },
     {

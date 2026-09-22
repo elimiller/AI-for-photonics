@@ -63,7 +63,7 @@ def stupidFunction(
 
     return temp_cell
 # %% Inpute params from meep
-r_x_list = [0.25, 0.3]
+r_x_list = [0.25]
 r_y_list = [0.25]
 theta_list = [0]
 wavelength = 0.532             # design wavelength [um]
@@ -117,7 +117,22 @@ field_monitor_xz = td.FieldMonitor(
     fields=["Ex", "Ez"],
     name="field_monitor_xz",
 )
-monDict = {"unit_cell_monitors": [transmission_monitor, field_monitor_xz]}
+# This spans the full periodic transverse plane, matching Meep's DFT plane
+# average used for the complex transmission phase.
+transmission_field_monitor = td.FieldMonitor(
+    center=(0, 0, monitor_z),
+    size=(td.inf, td.inf, 0),
+    freqs=[fcen],
+    fields=["Ex"],
+    name="transmission_field_monitor",
+)
+monDict = {
+    "unit_cell_monitors": [
+        transmission_monitor,
+        field_monitor_xz,
+        transmission_field_monitor,
+    ]
+}
 # %% Generate Inputs
 plane_wave_input = td.PlaneWave(
     center=(0, 0, source_z),
@@ -138,25 +153,24 @@ grid_spec = td.GridSpec.auto(
 )
 
 # %% Bring proper gds file
-gds_directory = next(
-    (
-        candidate / "Unit_cell_Libraries" / "Ellipse Pillar SiN on SiO2 532 nm KAIST" / "GDS Library"
-        for candidate in (Path.cwd(), *Path.cwd().parents, Path.cwd() / "Metasurface")
-        if (candidate / "Unit_cell_Libraries").is_dir()
-    ),
-    None,
-)
-if gds_directory is None:
-    raise FileNotFoundError("Could not locate the Metasurface/Unit_cell_Libraries directory.")
-gds_path = gds_directory / f"elliptical_pillar_rx_{r_x}_ry_{r_y}_theta_{theta}.gds"
+directory = os.getcwd()
+print(directory)
+gds_directory =  directory + "/Unit_cell_Libraries/Ellipse Pillar SiN on SiO2 532 nm KAIST/GDS Library"
+print(gds_directory)
+gds_path = gds_directory +  f"/elliptical_pillar_rx_{r_x}_ry_{r_y}_theta_{theta}.gds"
+print(gds_path)
 # %% Get cell name
 library = gd.read_gds(gds_path)
 gds_cells = [
-    cell for cell in library.top_level()
-    if not cell.name.startswith("$$$CONTEXT_INFO$$$")
+    cell for cell in library.cells
+    if cell.name.startswith("elliptical_pillar")
 ]
 if len(gds_cells) != 1:
-    raise ValueError(f"Expected one physical top cell in {gds_path}, found {len(gds_cells)}.")
+    cell_names = [cell.name for cell in library.cells]
+    raise ValueError(
+        f"Expected one elliptical-pillar cell in {gds_path}, found "
+        f"{len(gds_cells)}. Available cells: {cell_names}"
+    )
 gds_cell = gds_cells[0]
 print(gds_cell.name)
 # %% Turn this to tidy3d geometry
@@ -208,13 +222,13 @@ init_sim = td.Simulation(
     subpixel=True,
 )
 # %% Send sim to server
-init_job = web.Job(
+pillar_job = web.Job(
     simulation=init_sim,
     task_name="ellipse_unit_cell_check",
     folder_name="metasurface_unit_cell",
     verbose=True,
 )
-estimated_cost = init_job.estimate_cost()
+estimated_cost = pillar_job.estimate_cost()
 print(f"Estimated maximum cost per sim: {estimated_cost:.3f} Flex Credits")
 
 # ## Plot field profile of first sim
@@ -222,7 +236,7 @@ print(f"Estimated maximum cost per sim: {estimated_cost:.3f} Flex Credits")
 # %%
 import tidy3d.web as web
 web.test()
-# %% Extract transmission and phase
+# %% Run reference and pillar simulations; extract transmission and phase
 if RUN_SIMULATION:
     # Use the identical source, boundaries, substrate, and monitors without the
     # pillar as the reference.  This removes propagation and interface phase.
@@ -234,16 +248,10 @@ if RUN_SIMULATION:
         verbose=True,
     )
 
-    data_directory = gds_directory.parent / "Library Data"
-    if not data_directory.is_dir():
-        raise FileNotFoundError(f"Expected existing data directory: {data_directory}")
-
-    reference_data = reference_job.run(
-        path=data_directory / "ellipse_unit_cell_reference.hdf5"
-    )
-    pillar_data = init_job.run(
-        path=data_directory / "ellipse_unit_cell_pillar.hdf5"
-    )
+    # Job.run() submits, monitors, downloads, and returns SimulationData.
+    # No project-specific HDF5 output path is managed in this script.
+    reference_data = reference_job.run()
+    pillar_data = pillar_job.run()
 
     reference_flux = float(
         reference_data["transmission_monitor"].flux.sel(f=fcen, method="nearest").item()
@@ -253,18 +261,17 @@ if RUN_SIMULATION:
     )
     power_transmission = pillar_flux / reference_flux
 
-    # The ratio of complex Ex fields at the transmission plane is the
-    # zero-order complex transmission coefficient.  Averaging x samples the
-    # full unit-cell field; the common Bloch phase cancels in the ratio.
+    # Average Ex over the complete transverse periodic plane, matching the
+    # Meep DFT-plane extraction. The common Bloch phase cancels in the ratio.
     reference_ex = complex(
-        reference_data["field_monitor_xz"].Ex
-        .sel(f=fcen, z=monitor_z, method="nearest")
+        reference_data["transmission_field_monitor"].Ex
+        .sel(f=fcen, method="nearest")
         .mean()
         .item()
     )
     pillar_ex = complex(
-        pillar_data["field_monitor_xz"].Ex
-        .sel(f=fcen, z=monitor_z, method="nearest")
+        pillar_data["transmission_field_monitor"].Ex
+        .sel(f=fcen, method="nearest")
         .mean()
         .item()
     )

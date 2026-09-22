@@ -26,21 +26,22 @@ gds_lib_path = save_path / 'GDS Library'
 data_lib_path = save_path / 'Library Data'
 
 # %% Manual params
-r_x_list = [0.25,0.3]
+r_x_list = [0.25]
 r_y_list = [0.25]
 theta_list = [0]
 wavelength = 0.532             # design wavelength [um]
 period_list = [0.60]                 # square-lattice pitch [um]
 pillar_h_list = [0.85]
-incident_angle_list = [10]      # polar angle in degrees; tilt is in the x-z plane    
+incident_angle_list = [10.0]      # polar angle in degrees; tilt is in the x-z plane    
 RUN_SIMULATION = True
 PLOT_FIRST_PILLAR_FIELD_PROFILE = True  # Set False for library sweeps without plots.
 n_SiN = 2.0
 n_sio2 = 1.46
-resolution = 50               # pixels / um; increase after convergence test
+resolution = 75              # pixels / um; increase after convergence test
 dpml = 0.8                  # z-only absorbing boundary thickness [um]
 air_padding = 1.0             # air above and below the structure [um]
 substrate_h = 1.0 
+MEEP_PROGRESS_INTERVAL = 5.0  # simulation-time units between console updates
 # %% Generate GDS library 
 gds_files = generate_unit_cell_gds_lib(
     elliptical_pillar_gds,
@@ -49,21 +50,37 @@ gds_files = generate_unit_cell_gds_lib(
     r_y=r_y_list,
     theta=theta_list,
 )
-
+# %% Calculated parameters and structures 
 # %% Create and run simulations
 PILLAR_LAYER = (1, 0)
 POLARIZATION = mp.Ex  
 fcen = 1 / wavelength
 
 # %% Individual unit cell sim 
+def bloch_phase(position: mp.Vector3) -> complex:
+    """Apply the x-dependent phase of the oblique Bloch plane wave."""
+    return np.exp(2j * np.pi * k_point.x * position.x)
+# def generate_sim( extra_geometry: list[mp.GeometricObject],
+#     pillar_h: float,
+#     period: float,
+#     incident_angle_deg: float,
+#     plot_field_profile: bool = False,
+# ) -> dict[str, complex]:
+#     cell_z = substrate_h + pillar_h + 2 * air_padding + 2 * dpml
+#     cell = mp.Vector3(period, period, cell_z)
+#     monitor_z = 0.5 * cell_z - dpml - 0.35
+#     source_z = -0.5 * cell_z + dpml + 0.35
+#     incident_angle_rad = np.deg2rad(incident_angle_deg)
+#     return sim
 def run_unit_cell(
     extra_geometry: list[mp.GeometricObject],
     pillar_h: float,
     period: float,
     incident_angle_deg: float,
     plot_field_profile: bool = False,
-) -> dict[str, complex]:
-    """Return the mean complex p-polarized fields at the transmission plane."""
+) -> dict[str, complex | float]:
+    """Return transmission-plane fields and the total upward power flux."""
+    wall_clock_start = time.perf_counter()
     cell_z = substrate_h + pillar_h + 2 * air_padding + 2 * dpml
     cell = mp.Vector3(period, period, cell_z)
     monitor_z = 0.5 * cell_z - dpml - 0.35
@@ -104,6 +121,18 @@ def run_unit_cell(
         center=mp.Vector3(0, 0, monitor_z),
         size=mp.Vector3(period, period, 0),
     )
+    # Integrating the Poynting flux over one periodic cell includes every
+    # propagating transmitted diffraction order, not only the zero order.
+    transmission_flux = sim.add_flux(
+        fcen,
+        0,
+        1,
+        mp.FluxRegion(
+            center=mp.Vector3(0, 0, monitor_z),
+            size=mp.Vector3(period, period, 0),
+            direction=mp.Z,
+        ),
+    )
     # Ex is the p-polarized source current.  Ez is monitored to confirm that
     # the resulting field is transverse to the oblique wavevector.
     dft = sim.add_dft_fields([mp.Ex, mp.Ez], fcen, 0, 1, where=transmission_plane)
@@ -116,11 +145,52 @@ def run_unit_cell(
         field_profile_dft = sim.add_dft_fields(
             [mp.Ex], fcen, 0, 1, where=field_profile_plane
         )
+
+    progress_state = {"peak_field": 0.0, "updates": 0}
+    monitor_point = mp.Vector3(0, 0, monitor_z)
+
+    def log_progress(running_sim: mp.Simulation) -> None:
+        """Print a lightweight live estimate of field decay at the flux plane."""
+        field_magnitude = float(
+            abs(running_sim.get_field_point(POLARIZATION, monitor_point))
+        )
+        progress_state["peak_field"] = max(
+            progress_state["peak_field"], field_magnitude
+        )
+        progress_state["updates"] += 1
+        peak_field = progress_state["peak_field"]
+        decay_scale = field_magnitude / peak_field if peak_field else 0.0
+        if mp.am_master():
+            print(
+                "[Meep progress] "
+                f"t={running_sim.meep_time():7.2f}, "
+                f"wall={time.perf_counter() - wall_clock_start:7.1f}s, "
+                f"|{POLARIZATION}|={field_magnitude:.3e}, "
+                f"probe/peak={decay_scale:.3e}",
+                flush=True,
+            )
+
+    if mp.am_master():
+        print(
+            "[Meep start] "
+            f"period={period:.3f} um, height={pillar_h:.3f} um, "
+            f"angle={incident_angle_deg:.1f} deg, resolution={resolution} px/um",
+            flush=True,
+        )
     sim.run(
+        mp.at_every(MEEP_PROGRESS_INTERVAL, log_progress),
         until_after_sources=mp.stop_when_fields_decayed(
             50, POLARIZATION, mp.Vector3(0, 0, monitor_z), 1e-3
         )
     )
+    if mp.am_master():
+        print(
+            "[Meep done] "
+            f"t={sim.meep_time():.2f}, "
+            f"wall={time.perf_counter() - wall_clock_start:.1f}s, "
+            f"progress_updates={progress_state['updates']}",
+            flush=True,
+        )
     if field_profile_dft is not None:
         ex_profile = np.squeeze(
             sim.get_dft_array(field_profile_dft, mp.Ex, 0)
@@ -151,6 +221,7 @@ def run_unit_cell(
         fig.tight_layout()
         plt.show()
     return {
+        "transmitted_flux": float(mp.get_fluxes(transmission_flux)[0]),
         "ex": complex(np.mean(sim.get_dft_array(dft, mp.Ex, 0))),
         "ez": complex(np.mean(sim.get_dft_array(dft, mp.Ez, 0))),
     }
@@ -160,7 +231,7 @@ def run_reference_unit_cell(
     pillar_h: float,
     period: float,
     incident_angle_deg: float,
-) -> dict[str, complex]:
+) -> dict[str, complex | float]:
     """Run the bare-substrate reference for one height/period/angle condition."""
     return run_unit_cell([], pillar_h, period, incident_angle_deg)
 
@@ -170,7 +241,7 @@ def simulate_gds_unit_cell(
     pillar_h: float,
     period: float,
     incident_angle_deg: float,
-    reference_field: dict[str, complex],
+    reference_field: dict[str, complex | float],
     plot_field_profile: bool = False,
 ) -> dict[str, object]:
     """Simulate one pillar GDS using an already-computed bare reference."""
@@ -203,7 +274,10 @@ def simulate_gds_unit_cell(
         plot_field_profile=plot_field_profile,
     )
     transmission_and_phase = calculate_transmission_and_phase(
-        reference_field["ex"], pillar_field["ex"]
+        reference_field["ex"],
+        pillar_field["ex"],
+        reference_field["transmitted_flux"],
+        pillar_field["transmitted_flux"],
     )
     return {
         "geometry": ellipse_geometry_metadata(file_path),
@@ -219,13 +293,25 @@ def simulate_gds_unit_cell(
 
 
 def calculate_transmission_and_phase(
-    reference_field: complex, pillar_field: complex
+    reference_field: complex,
+    pillar_field: complex,
+    reference_flux: float,
+    pillar_flux: float,
 ) -> dict[str, complex | float]:
-    """Calculate normalized power transmission and phase from two DFT fields."""
+    """Calculate total power transmission and zero-order field response."""
     transmission_coefficient = pillar_field / reference_field
+    if reference_flux == 0:
+        raise ZeroDivisionError("Reference transmission flux is zero.")
     return {
         "complex_transmission_coefficient": transmission_coefficient,
+        # Retained for compatibility with existing library records.  It is an
+        # Ex-only zero-order estimate, whereas total_power_transmission is the
+        # integrated transmitted power requested for this unit cell.
         "power_transmission": float(abs(transmission_coefficient) ** 2),
+        "zero_order_power_transmission_estimate": float(
+            abs(transmission_coefficient) ** 2
+        ),
+        "total_power_transmission": float(pillar_flux / reference_flux),
         "phase_deg": float(
             np.degrees(np.angle(transmission_coefficient) % (2 * np.pi))
         ),
@@ -332,7 +418,9 @@ def sweep_unit_cell_simulations(
     conditions = list(dict.fromkeys(product(
         pillar_heights, periods, incident_angles_deg
     )))
-    reference_fields: dict[tuple[float, float, float], dict[str, complex]] = {}
+    reference_fields: dict[
+        tuple[float, float, float], dict[str, complex | float]
+    ] = {}
     for index, (pillar_h, period, incident_angle_deg) in enumerate(
         conditions, start=1
     ):
@@ -390,13 +478,17 @@ def sweep_unit_cell_simulations(
     ]
     library_data = {
         "metadata": {
-            "schema_version": 1,
+            "schema_version": 2,
             "wavelength_um": wavelength,
             "length_unit": "um",
             "source_current_component": "Ex",
             "polarization": "p/TM",
             "incident_plane": "x-z",
             "transmission_component": "Ex",
+            "total_power_transmission_definition": (
+                "Total upward Poynting flux through one unit cell, normalized "
+                "to the bare-substrate reference."
+            ),
             "complex_value_format": {"real": "float", "imag": "float"},
         },
         "references": reference_results,
