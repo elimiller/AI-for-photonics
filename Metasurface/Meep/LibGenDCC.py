@@ -16,8 +16,9 @@ import sys
 import re
 from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(PROJECT_ROOT))
-from Unit_cell_generation import*
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from Metasurface.Unit_cell_generation import*
 gf.gpdk.PDK.activate()
 # %%  Get correct save directory
 path = Path(__file__).parent.parent
@@ -43,6 +44,7 @@ dpml = 0.8                    # z-only absorbing boundary thickness [um]
 air_padding = 1.0             # air above and below the structure [um]
 substrate_h = 1.0 
 
+unique_r_x, unique_r_y, unique_theta = 
 # %% Gen GDS library
 gds_files = generate_unit_cell_gds_lib(
     elliptical_pillar_gds,
@@ -233,13 +235,6 @@ def Elim_Redundincies(r_x_list, r_y_list, theta_list):
 
     return unique_r_x, unique_r_y, unique_theta
 
-# Test
-r_x_list = [0.10, 0.20]
-r_y_list = [0.10, 0.20]
-theta_list = [0, 30, 90, 120, 180]
-rx_unique, ry_unique, theta_unique = Elim_Redundincies(
-    r_x_list, r_y_list, theta_list
-)
 # %% Run an individual sim
 
 def run_unit_cell(
@@ -462,4 +457,3 @@ rx_unique, ry_unique, theta_unique = Elim_Redundincies(
 
 # Conventional spelling for new callers; retain the original function name
 # because it may already be used by notebooks or scripts in this project.
-
