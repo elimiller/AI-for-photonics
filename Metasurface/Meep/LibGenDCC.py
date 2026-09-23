@@ -17,7 +17,7 @@ import re
 from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
-from Metasurface.Unit_cell_generation import*
+from Unit_cell_generation import*
 gf.gpdk.PDK.activate()
 # %%  Get correct save directory
 path = Path(__file__).parent.parent
@@ -59,7 +59,7 @@ POLARIZATION = mp.Ex # TM or P polarized
 fcen = 1 / wavelength
 MEEP_PROGRESS_INTERVAL = 5.0  # simulation-time units between progress messages
 
-# %% Logging, calculation, and other functions to be used
+# %% Logging, calculation, cost reductions, and other functions to be used
 def log_decay_progress(
     running_sim: mp.Simulation,
     monitor_point: mp.Vector3,
@@ -180,6 +180,66 @@ def ellipse_geometry_metadata(file_path: Path) -> dict[str, object]:
             }
         )
     return metadata
+
+
+def Elim_Redundincies(r_x_list, r_y_list, theta_list):
+    """Return unique centered-ellipse geometries from three parameter sweeps.
+
+    The inputs are independent sweeps: every ``r_x``, ``r_y``, and ``theta``
+    combination is considered.  The returned lists are *parallel* lists, so
+    ``zip(unique_r_x, unique_r_y, unique_theta, strict=True)`` yields the
+    unique configurations.  They must therefore not be passed back to
+    ``generate_unit_cell_gds_lib`` as independent sweeps.
+
+    Angles are in degrees.  The canonical representation uses ``r_x >= r_y``
+    and ``0 <= theta < 180``.  It removes these exact geometric duplicates:
+
+    * ``(r_x, r_y, theta) == (r_x, r_y, theta + 180)``;
+    * ``(r_x, r_y, theta) == (r_y, r_x, theta + 90)``;
+    * a circle has the canonical orientation ``theta = 0``.
+    """
+    unique_r_x = []
+    unique_r_y = []
+    unique_theta = []
+    seen = set()
+
+    for r_x, r_y, theta in product(r_x_list, r_y_list, theta_list):
+        r_x = float(r_x)
+        r_y = float(r_y)
+        theta = float(theta)
+        if not (np.isfinite(r_x) and np.isfinite(r_y) and np.isfinite(theta)):
+            raise ValueError("Ellipse radii and rotation angles must be finite.")
+        if r_x <= 0 or r_y <= 0:
+            raise ValueError("Ellipse radii must be positive.")
+
+        # An ellipse axis is unoriented, hence theta and theta + 180 deg are
+        # the same geometry.  Normalize before applying the axis convention.
+        theta = theta % 180.0
+        if r_x < r_y:
+            r_x, r_y = r_y, r_x
+            theta = (theta + 90.0) % 180.0
+
+        # All orientations of a circle describe the same geometry.
+        if r_x == r_y:
+            theta = 0.0
+
+        configuration = (r_x, r_y, theta)
+        if configuration in seen:
+            continue
+        seen.add(configuration)
+        unique_r_x.append(r_x)
+        unique_r_y.append(r_y)
+        unique_theta.append(theta)
+
+    return unique_r_x, unique_r_y, unique_theta
+
+# Test
+r_x_list = [0.10, 0.20]
+r_y_list = [0.10, 0.20]
+theta_list = [0, 30, 90, 120, 180]
+rx_unique, ry_unique, theta_unique = Elim_Redundincies(
+    r_x_list, r_y_list, theta_list
+)
 # %% Run an individual sim
 
 def run_unit_cell(
@@ -341,6 +401,65 @@ def simulate_gds_unit_cell(
         "normalized_response": transmission_and_phase,
     }
 # %% Handle input lists
-def Elim_Redundincies(r_x_list,r_y_list,theta_list,incident_angle_list):
-    
-    return 
+def Elim_Redundincies(r_x_list, r_y_list, theta_list):
+    """Return unique centered-ellipse geometries from three parameter sweeps.
+
+    The inputs are independent sweeps: every ``r_x``, ``r_y``, and ``theta``
+    combination is considered.  The returned lists are *parallel* lists, so
+    ``zip(unique_r_x, unique_r_y, unique_theta, strict=True)`` yields the
+    unique configurations.  They must therefore not be passed back to
+    ``generate_unit_cell_gds_lib`` as independent sweeps.
+
+    Angles are in degrees.  The canonical representation uses ``r_x >= r_y``
+    and ``0 <= theta < 180``.  It removes these exact geometric duplicates:
+
+    * ``(r_x, r_y, theta) == (r_x, r_y, theta + 180)``;
+    * ``(r_x, r_y, theta) == (r_y, r_x, theta + 90)``;
+    * a circle has the canonical orientation ``theta = 0``.
+    """
+    unique_r_x = []
+    unique_r_y = []
+    unique_theta = []
+    seen = set()
+
+    for r_x, r_y, theta in product(r_x_list, r_y_list, theta_list):
+        r_x = float(r_x)
+        r_y = float(r_y)
+        theta = float(theta)
+        if not (np.isfinite(r_x) and np.isfinite(r_y) and np.isfinite(theta)):
+            raise ValueError("Ellipse radii and rotation angles must be finite.")
+        if r_x <= 0 or r_y <= 0:
+            raise ValueError("Ellipse radii must be positive.")
+
+        # An ellipse axis is unoriented, hence theta and theta + 180 deg are
+        # the same geometry.  Normalize before applying the axis convention.
+        theta = theta % 180.0
+        if r_x < r_y:
+            r_x, r_y = r_y, r_x
+            theta = (theta + 90.0) % 180.0
+
+        # All orientations of a circle describe the same geometry.
+        if r_x == r_y:
+            theta = 0.0
+
+        configuration = (r_x, r_y, theta)
+        if configuration in seen:
+            continue
+        seen.add(configuration)
+        unique_r_x.append(r_x)
+        unique_r_y.append(r_y)
+        unique_theta.append(theta)
+
+    return unique_r_x, unique_r_y, unique_theta
+
+# Test
+r_x_list = [0.10, 0.20]
+r_y_list = [0.10, 0.20]
+theta_list = [0, 30, 90, 120, 180]
+rx_unique, ry_unique, theta_unique = Elim_Redundincies(
+    r_x_list, r_y_list, theta_list
+)
+
+# Conventional spelling for new callers; retain the original function name
+# because it may already be used by notebooks or scripts in this project.
+
