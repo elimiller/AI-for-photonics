@@ -340,4 +340,7 @@ def simulate_gds_unit_cell(
         "pillar_transmission_plane_fields": pillar_field,
         "normalized_response": transmission_and_phase,
     }
-# %% Sweep sims
+# %% Handle input lists
+def Elim_Redundincies(r_x_list,r_y_list,theta_list,incident_angle_list):
+    
+    return 
