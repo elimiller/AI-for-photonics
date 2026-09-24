@@ -12,7 +12,6 @@ from gdsfactory.technology import LayerLevel, LayerStack
 from gplugins.gmeep.get_meep_geometry import get_meep_geometry_from_component
 from inspect import Parameter, signature
 from itertools import product
-from functools import partial
 import os
 import sys
 import re
@@ -390,15 +389,18 @@ def run_unit_cell(
     wall_clock_start = time.perf_counter()
     monitor_point = mp.Vector3(0, 0, monitor_z)
 
+    def report_decay_progress(running_sim: mp.Simulation) -> None:
+        log_decay_progress(
+            running_sim,
+            monitor_point,
+            progress_state,
+            wall_clock_start,
+        )
+
     sim.run(
         mp.at_every(
             MEEP_PROGRESS_INTERVAL,
-            partial(
-                log_decay_progress,
-                monitor_point=monitor_point,
-                progress_state=progress_state,
-                wall_clock_start=wall_clock_start,
-            ),
+            report_decay_progress,
         ),
         until_after_sources=mp.stop_when_fields_decayed(
             50, POLARIZATION, mp.Vector3(0, 0, monitor_z), 1e-3
@@ -606,5 +608,5 @@ def ellipse_pillar_sweeps(
     return simulations
 
 # %% Initial Notebook test
-ellipse_pillar_sweeps(r_x_list,r_y_list,theta_list,pillar_h_list,incident_angle_list,gds_lib_path,data_lib_path)
+ellipse_pillar_sweeps(r_x_list,r_y_list,theta_list,pillar_h_list,period_list,incident_angle_list,gds_lib_path,data_lib_path)
 # %% Data processing before running sim
