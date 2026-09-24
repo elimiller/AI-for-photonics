@@ -2,6 +2,8 @@
 import meep as mp
 import numpy as np
 import matplotlib.pyplot as plt
+import csv
+import json
 from matplotlib.patches import Rectangle
 import time
 import gdsfactory as gf
@@ -15,6 +17,7 @@ import os
 import sys
 import re
 from pathlib import Path
+from datetime import datetime
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -44,15 +47,14 @@ dpml = 0.8                    # z-only absorbing boundary thickness [um]
 air_padding = 1.0             # air above and below the structure [um]
 substrate_h = 1.0 
 
-unique_r_x, unique_r_y, unique_theta = 
 # %% Gen GDS library
-gds_files = generate_unit_cell_gds_lib(
-    elliptical_pillar_gds,
-    gds_lib_path,
-    r_x=r_x_list,
-    r_y=r_y_list,
-    theta=theta_list,
-)
+# gds_files = generate_unit_cell_gds_lib(
+#     elliptical_pillar_gds,
+#     gds_lib_path,
+#     r_x=r_x_list,
+#     r_y=r_y_list,
+#     theta=theta_list,
+# )
 
 
 # %% Create sim
@@ -395,65 +397,157 @@ def simulate_gds_unit_cell(
         "pillar_transmission_plane_fields": pillar_field,
         "normalized_response": transmission_and_phase,
     }
-# %% Handle input lists
-def Elim_Redundincies(r_x_list, r_y_list, theta_list):
-    """Return unique centered-ellipse geometries from three parameter sweeps.
+# %% Loop through sim
+def ellipse_pillar_sweeps(
+    r_x_list,
+    r_y_list,
+    theta_list,
+    pillar_h_list,
+    period_list,
+    incident_angle_list,
+    gds_lib_path,
+    data_lib_path,
+) -> list[dict[str, object]]:
+    """Run only the new ellipse-pillar simulations from the supplied sweeps.
 
-    The inputs are independent sweeps: every ``r_x``, ``r_y``, and ``theta``
-    combination is considered.  The returned lists are *parallel* lists, so
-    ``zip(unique_r_x, unique_r_y, unique_theta, strict=True)`` yields the
-    unique configurations.  They must therefore not be passed back to
-    ``generate_unit_cell_gds_lib`` as independent sweeps.
-
-    Angles are in degrees.  The canonical representation uses ``r_x >= r_y``
-    and ``0 <= theta < 180``.  It removes these exact geometric duplicates:
-
-    * ``(r_x, r_y, theta) == (r_x, r_y, theta + 180)``;
-    * ``(r_x, r_y, theta) == (r_y, r_x, theta + 90)``;
-    * a circle has the canonical orientation ``theta = 0``.
+    Results are kept in both a JSON library and a CSV table in
+    ``data_lib_path``.  The JSON contains the complete compact result record;
+    the CSV is convenient to open in a spreadsheet.
     """
-    unique_r_x = []
-    unique_r_y = []
-    unique_theta = []
-    seen = set()
+    unique_r_x, unique_r_y, unique_theta = Elim_Redundincies(
+        r_x_list, r_y_list, theta_list
+    )
+    geometries = list(zip(unique_r_x, unique_r_y, unique_theta, strict=True))
+    pillar_h_list = list(dict.fromkeys(map(float, pillar_h_list)))
+    period_list = list(dict.fromkeys(map(float, period_list)))
+    incident_angle_list = list(dict.fromkeys(map(float, incident_angle_list)))
 
-    for r_x, r_y, theta in product(r_x_list, r_y_list, theta_list):
-        r_x = float(r_x)
-        r_y = float(r_y)
-        theta = float(theta)
-        if not (np.isfinite(r_x) and np.isfinite(r_y) and np.isfinite(theta)):
-            raise ValueError("Ellipse radii and rotation angles must be finite.")
-        if r_x <= 0 or r_y <= 0:
-            raise ValueError("Ellipse radii must be positive.")
+    json_path = data_lib_path / "ellipse_pillar_library_data.json"
+    csv_path = data_lib_path / "ellipse_pillar_library_data.csv"
+    library = (
+        json.loads(json_path.read_text())
+        if json_path.exists()
+        else {"metadata": {"wavelength_um": wavelength, "length_unit": "um"}, "results": []}
+    )
+    results = library.setdefault("results", [])
 
-        # An ellipse axis is unoriented, hence theta and theta + 180 deg are
-        # the same geometry.  Normalize before applying the axis convention.
-        theta = theta % 180.0
-        if r_x < r_y:
-            r_x, r_y = r_y, r_x
-            theta = (theta + 90.0) % 180.0
+    def simulation_key(geometry, condition):
+        return (
+            float(geometry["radius_x_um"]),
+            float(geometry["radius_y_um"]),
+            float(geometry["rotation_deg"]),
+            float(condition["pillar_height_um"]),
+            float(condition["period_um"]),
+            float(condition["incident_angle_deg"]),
+        )
 
-        # All orientations of a circle describe the same geometry.
-        if r_x == r_y:
-            theta = 0.0
+    completed = {
+        simulation_key(record["geometry"], record["simulation_condition"])
+        for record in results
+    }
 
-        configuration = (r_x, r_y, theta)
-        if configuration in seen:
-            continue
-        seen.add(configuration)
-        unique_r_x.append(r_x)
-        unique_r_y.append(r_y)
-        unique_theta.append(theta)
+    # ``Elim_Redundincies`` returns parallel lists, so export each geometry as
+    # a one-item sweep.  Passing the full lists would recreate their Cartesian
+    # product and bring the geometric duplicates back.
+    gds_files = {
+        geometry: generate_unit_cell_gds_lib(
+            elliptical_pillar_gds,
+            gds_lib_path,
+            r_x=[geometry[0]],
+            r_y=[geometry[1]],
+            theta=[geometry[2]],
+        )[0]
+        for geometry in geometries
+    }
+    reference_fields = {}
 
-    return unique_r_x, unique_r_y, unique_theta
+    def save_library() -> None:
+        json_path.write_text(json.dumps(library, indent=2))
+        columns = [
+            "radius_x_um", "radius_y_um", "rotation_deg",
+            "pillar_height_um", "period_um", "incident_angle_deg",
+            "ex_real", "ex_imag", "ey_real", "ey_imag",
+            "ez_real", "ez_imag", "tm_real", "tm_imag",
+            "te_real", "te_imag", "power_flux_transmission", "completed_at",
+        ]
+        with csv_path.open("w", newline="") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=columns)
+            writer.writeheader()
+            for record in results:
+                geometry = record["geometry"]
+                condition = record["simulation_condition"]
+                response = record["normalized_response"]
+                row = {
+                    "radius_x_um": geometry["radius_x_um"],
+                    "radius_y_um": geometry["radius_y_um"],
+                    "rotation_deg": geometry["rotation_deg"],
+                    **condition,
+                    "completed_at": record.get("completed_at", ""),
+                }
+                for component in ("ex", "ey", "ez", "tm", "te"):
+                    coefficient = response.get(component, {})
+                    if component == "tm" and not coefficient:
+                        coefficient = response.get("complex_transmission_coefficient", {})
+                    row[f"{component}_real"] = coefficient.get("real", "")
+                    row[f"{component}_imag"] = coefficient.get("imag", "")
+                row["power_flux_transmission"] = response.get(
+                    "power_flux_transmission", response.get("power_transmission", "")
+                )
+                writer.writerow(row)
 
-# Test
-r_x_list = [0.10, 0.20]
-r_y_list = [0.10, 0.20]
-theta_list = [0, 30, 90, 120, 180]
-rx_unique, ry_unique, theta_unique = Elim_Redundincies(
-    r_x_list, r_y_list, theta_list
-)
+    for geometry in geometries:
+        for pillar_h, period, incident_angle in product(
+            pillar_h_list, period_list, incident_angle_list
+        ):
+            condition = {
+                "pillar_height_um": pillar_h,
+                "period_um": period,
+                "incident_angle_deg": incident_angle,
+            }
+            geometry_metadata = {
+                "radius_x_um": geometry[0],
+                "radius_y_um": geometry[1],
+                "rotation_deg": geometry[2],
+            }
+            key = simulation_key(geometry_metadata, condition)
+            timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+            if key in completed:
+                print(f"[{timestamp}] already in library; skipped {key}", flush=True)
+                continue
 
-# Conventional spelling for new callers; retain the original function name
-# because it may already be used by notebooks or scripts in this project.
+            reference_key = (pillar_h, period, incident_angle, geometry[2])
+            if reference_key not in reference_fields:
+                reference_fields[reference_key] = run_reference_unit_cell(
+                    pillar_h, period, incident_angle, theta_deg=geometry[2]
+                )
+            simulation = simulate_gds_unit_cell(
+                gds_files[geometry],
+                pillar_h,
+                period,
+                incident_angle,
+                reference_fields[reference_key],
+                theta_deg=geometry[2],
+            )
+            response = simulation["normalized_response"]
+            results.append(
+                {
+                    "geometry": {
+                        **geometry_metadata,
+                        "geometry_type": "elliptical_pillar",
+                        "gds_path": str(gds_files[geometry]),
+                    },
+                    "simulation_condition": condition,
+                    "normalized_response": response,
+                    "completed_at": datetime.now().astimezone().isoformat(
+                        timespec="seconds"
+                    ),
+                }
+            )
+            completed.add(key)
+            save_library()
+            print(
+                f"[{results[-1]['completed_at']}] completed {key}", flush=True
+            )
+
+    save_library()
+    return results
