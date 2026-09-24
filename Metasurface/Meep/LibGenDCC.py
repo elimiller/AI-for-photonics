@@ -41,13 +41,13 @@ def sellfit(x):
 print(sellfit(-0.248)) # Normalized wavelength
 
 # %% Manual params
-r_x_list = [0.25,0.3]
-r_y_list = [0.25]
-theta_list = [0,5]
+r_x_list = np.linspace(60,110,4)
+r_y_list = np.linspace(60,110,4)
+theta_list = np.linspace(0,180,4)
 wavelength = 0.532             # design wavelength [um]
-period_list = [0.60]                 # square-lattice pitch [um]
-pillar_h_list = [0.85]
-incident_angle_list = [10]       # polar angle in degrees; tilt is in the x-z plane
+period_list = [0.300]             # square-lattice pitch [um]
+pillar_h_list = [0.600]
+incident_angle_list = [0,5,10]# polar angle in degrees; tilt is in the x-z plane
 RUN_SIMULATION = False
 n_SiN = sellfit(-0.248)
 n_sio2 = 1.46
