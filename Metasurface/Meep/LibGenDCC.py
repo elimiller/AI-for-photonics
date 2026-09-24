@@ -31,9 +31,9 @@ gds_lib_path = save_path / 'GDS Library'
 data_lib_path = save_path / 'Library Data'
 
 # %% Manual params
-r_x_list = [0.25]
+r_x_list = [0.25,0.3]
 r_y_list = [0.25]
-theta_list = [0]
+theta_list = [0,5]
 wavelength = 0.532             # design wavelength [um]
 period_list = [0.60]                 # square-lattice pitch [um]
 pillar_h_list = [0.85]
@@ -299,11 +299,15 @@ def write_ellipse_pillar_library(
         },
         "simulations": simulations,
     }
-    json_path.write_text(json.dumps(library, indent=2))
-    with csv_path.open("w", newline="") as csv_file:
+    json_temp_path = json_path.with_suffix(json_path.suffix + ".tmp")
+    csv_temp_path = csv_path.with_suffix(csv_path.suffix + ".tmp")
+    json_temp_path.write_text(json.dumps(library, indent=2))
+    json_temp_path.replace(json_path)
+    with csv_temp_path.open("w", newline="") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=ELLIPSE_LIBRARY_COLUMNS)
         writer.writeheader()
         writer.writerows(simulations)
+    csv_temp_path.replace(csv_path)
 
 
 

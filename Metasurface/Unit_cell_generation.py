@@ -49,6 +49,7 @@ def elliptical_pillar_component(
         gf.components.ellipse(radii=(r_x, r_y), layer=(1, 0))
     )
     ellipse.drotate(theta)
+    pillar.flatten()
     return pillar
 
 
