@@ -89,6 +89,32 @@
       "tm_imag": 0.6799065907573753,
       "te_real": 0.0,
       "te_imag": 0.0
+    },
+    {
+      "radius_x_um": 6.0,
+      "radius_y_um": 6.0,
+      "rotation_deg": 0.0,
+      "pillar_height_um": 0.6,
+      "period_um": 0.3,
+      "incident_angle_deg": 0.0,
+      "gds_path": "/home/eli/Grad/AI-for-photonics/Metasurface/Unit_cell_Libraries/Ellipse Pillar SiN on SiO2 532 nm KAIST/GDS Library/elliptical_pillar_rx_6.0_ry_6.0_theta_0.0.gds",
+      "zero_order_power_estimate": 0.9353286830214215,
+      "total_transmitted_power_ratio": 0.9353287311742118,
+      "reference_transmission_plane_flux": 0.5283050418817542,
+      "pillar_transmission_plane_flux": 0.49413888449619997,
+      "zero_order_tm_magnitude": 0.9671239233011566,
+      "zero_order_tm_phase_deg": 44.66973155197135,
+      "completed_at": "2026-09-24T02:03:20-04:00",
+      "ex_real": 0.6877904556375469,
+      "ex_imag": 0.6799065907573753,
+      "ey_real": 2.9335735121436666,
+      "ey_imag": -1.5360940769144875,
+      "ez_real": -0.1832515945965582,
+      "ez_imag": -0.010320249934709976,
+      "tm_real": 0.6877904556375469,
+      "tm_imag": 0.6799065907573753,
+      "te_real": 0.0,
+      "te_imag": 0.0
     }
   ]
 }

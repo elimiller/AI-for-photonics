@@ -41,8 +41,8 @@ def sellfit(x):
 print(sellfit(-0.248)) # Normalized wavelength
 
 # %% Manual params
-r_x_list = np.linspace(60,110,4)*0.1
-r_y_list = np.linspace(60,110,4)*0.1
+r_x_list = np.linspace(60,110,4)*0.1*0.1
+r_y_list = np.linspace(60,110,4)*0.1*0.1
 theta_list = np.linspace(0,180,4)
 wavelength = 0.532             # design wavelength [um]
 period_list = [0.300]             # square-lattice pitch [um]
