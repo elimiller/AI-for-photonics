@@ -424,10 +424,9 @@ def run_reference_unit_cell(
     pillar_h: float,
     period: float,
     incident_angle_deg: float,
-    theta_deg: float = 0.0,
 ) -> dict[str, complex | float]:
     """Run the bare-substrate reference for one height/period/angle condition."""
-    return run_unit_cell([], pillar_h, period, incident_angle_deg, theta_deg)
+    return run_unit_cell([], pillar_h, period, incident_angle_deg)
 
 
  
@@ -559,10 +558,10 @@ def ellipse_pillar_sweeps(
                 print(f"[{timestamp}] already in library; skipped {key}", flush=True)
                 continue
 
-            reference_key = (pillar_h, period, incident_angle, geometry[2])
+            reference_key = (pillar_h, period, incident_angle)
             if reference_key not in reference_fields:
                 reference_fields[reference_key] = run_reference_unit_cell(
-                    pillar_h, period, incident_angle, theta_deg=geometry[2]
+                    pillar_h, period, incident_angle
                 )
             simulation = simulate_gds_unit_cell(
                 gds_files[geometry],
