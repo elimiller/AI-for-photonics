@@ -17,6 +17,7 @@ import sys
 import re
 from pathlib import Path
 from datetime import datetime
+import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -714,4 +715,68 @@ def ellipse_pillar_sweeps(
 
 # %% Initial Notebook test
 ellipse_pillar_sweeps(r_x_list,r_y_list,theta_list,pillar_h_list,period_list,incident_angle_list,gds_lib_path,data_lib_path)
-# %% Data processing before running sim
+# %% Post sim processing and phase coverage plot
+def plot_phase_coverage(
+    csv_path: Path | None = None,
+    first_data_row: int = 6,
+) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes]]:
+    """Plot saved zero-order phase and power against simulation index.
+
+    The current library CSV has a header followed by four placeholder rows,
+    so the first valid simulation is physical CSV row 6.  ``first_data_row``
+    is a one-based CSV row number (including the header), rather than a
+    pandas-style zero-based index.
+    """
+    if csv_path is None:
+        csv_path = data_lib_path / "ellipse_pillar_library_data.csv"
+
+    phases = []
+    transmissions = []
+    with csv_path.open(newline="") as csv_file:
+        reader = csv.DictReader(csv_file)
+        for csv_row, record in enumerate(reader, start=2):
+            if csv_row < first_data_row:
+                continue
+            try:
+                phase = float(record["zero_order_tm_phase_deg"])
+                transmission = float(record["zero_order_power_estimate"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if np.isfinite(phase) and np.isfinite(transmission):
+                phases.append(phase % 360)
+                transmissions.append(transmission)
+
+    if not phases:
+        raise ValueError(f"No valid simulation records found in {csv_path}.")
+
+    simulation_indices = np.arange(1, len(phases) + 1)
+    fig, ax_phase = plt.subplots()
+    phase_points = ax_phase.scatter(
+        simulation_indices, phases, marker="o", color="tab:orange", label="Phase"
+    )
+    ax_phase.set_xlabel("Simulation index")
+    ax_phase.set_ylabel("Phase (degrees)", color="tab:orange")
+    ax_phase.tick_params(axis="y", labelcolor="tab:orange")
+    ax_phase.set_ylim(0, 360)
+
+    ax_transmission = ax_phase.twinx()
+    transmission_points = ax_transmission.scatter(
+        simulation_indices,
+        transmissions,
+        marker="x",
+        color="tab:blue",
+        label="Zero-order power estimate",
+    )
+    ax_transmission.set_ylabel("Zero-order power estimate", color="tab:blue")
+    ax_transmission.tick_params(axis="y", labelcolor="tab:blue")
+
+    ax_transmission.set_title("Zero-order transmission and phase coverage")
+    ax_phase.legend(handles=[phase_points, transmission_points])
+    fig.tight_layout()
+    plt.show()
+    return fig, (ax_phase, ax_transmission)
+
+
+# %% Plot
+plot_phase_coverage()
+# %%
