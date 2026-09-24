@@ -29,6 +29,16 @@ save_path = path / "Unit_cell_Libraries" /  'Ellipse Pillar SiN on SiO2 532 nm K
 print(save_path)
 gds_lib_path = save_path / 'GDS Library'
 data_lib_path = save_path / 'Library Data'
+# %% Sellmeeir curve fit
+def sellfit(x):
+    a = -0.0468
+    b = 0.0687
+    c = -0.0353
+    d = 0.037
+    e = -0.0483
+    f = 1.9873
+    return a*x**5 + b*x**4 + c*x**3 + d*x**2 + e*x + f
+print(sellfit(-0.248)) # Normalized wavelength
 
 # %% Manual params
 r_x_list = [0.25,0.3]
@@ -39,7 +49,7 @@ period_list = [0.60]                 # square-lattice pitch [um]
 pillar_h_list = [0.85]
 incident_angle_list = [10]       # polar angle in degrees; tilt is in the x-z plane
 RUN_SIMULATION = False
-n_SiN = 2.0
+n_SiN = sellfit(-0.248)
 n_sio2 = 1.46
 resolution = 75               # pixels / um; increase after convergence test
 dpml = 0.8                    # z-only absorbing boundary thickness [um]

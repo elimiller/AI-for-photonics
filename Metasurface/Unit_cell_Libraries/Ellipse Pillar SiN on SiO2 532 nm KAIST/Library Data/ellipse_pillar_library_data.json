@@ -1,7 +1,15 @@
 {
   "metadata": {
     "wavelength_um": 0.532,
-    "length_unit": "um"
+    "length_unit": "um",
+    "field_definitions": {
+      "zero_order_power_estimate": "abs(tm)^2 + abs(te)^2 from normalized zero-order field coefficients; not an integrated flux measurement",
+      "total_transmitted_power_ratio": "pillar transmission-plane flux divided by bare-reference transmission-plane flux",
+      "reference_transmission_plane_flux": "raw integrated z-directed Poynting flux for the bare reference",
+      "pillar_transmission_plane_flux": "raw integrated z-directed Poynting flux for the pillar simulation",
+      "zero_order_tm_magnitude": "magnitude of the normalized zero-order TM coefficient",
+      "zero_order_tm_phase_deg": "phase of the normalized zero-order TM coefficient, in degrees from 0 to 360"
+    }
   },
   "simulations": [
     {
@@ -12,12 +20,6 @@
       "period_um": 0.6,
       "incident_angle_deg": 10.0,
       "gds_path": "/home/eli/Grad/AI-for-photonics/Metasurface/Unit_cell_Libraries/Ellipse Pillar SiN on SiO2 532 nm KAIST/GDS Library/elliptical_pillar_rx_0.25_ry_0.25_theta_0.0.gds",
-      "power_flux_transmission": 0.584966153126264,
-      "total_power_transmission": 0.8326537748071187,
-      "reference_transmitted_flux": 8.811509121227544,
-      "pillar_transmitted_flux": 7.336936331537472,
-      "transmission_magnitude": 0.7648308003253164,
-      "transmission_phase_deg": 135.5503813438792,
       "completed_at": "2026-09-23T23:27:51-04:00",
       "ex_real": -0.5338718559891935,
       "ex_imag": 0.5381297484094575,
@@ -27,6 +29,38 @@
       "ez_imag": 0.45470061187666466,
       "tm_real": -0.5459870843007508,
       "tm_imag": 0.5355971031503333,
+      "te_real": 0.0,
+      "te_imag": 0.0,
+      "zero_order_power_estimate": 0.584966153126264,
+      "total_transmitted_power_ratio": 0.8326537748071187,
+      "reference_transmission_plane_flux": 8.811509121227544,
+      "pillar_transmission_plane_flux": 7.336936331537472,
+      "zero_order_tm_magnitude": 0.7648308003253164,
+      "zero_order_tm_phase_deg": 135.5503813438792
+    },
+    {
+      "radius_x_um": 0.3,
+      "radius_y_um": 0.25,
+      "rotation_deg": 0.0,
+      "pillar_height_um": 0.85,
+      "period_um": 0.6,
+      "incident_angle_deg": 10.0,
+      "gds_path": "/home/eli/Grad/AI-for-photonics/Metasurface/Unit_cell_Libraries/Ellipse Pillar SiN on SiO2 532 nm KAIST/GDS Library/elliptical_pillar_rx_0.3_ry_0.25_theta_0.0.gds",
+      "zero_order_power_estimate": 0.31568425085696805,
+      "total_transmitted_power_ratio": 0.9540262069828593,
+      "reference_transmission_plane_flux": 8.811509121227544,
+      "pillar_transmission_plane_flux": 8.406410624719582,
+      "zero_order_tm_magnitude": 0.5618578564521173,
+      "zero_order_tm_phase_deg": 172.09259470032677,
+      "completed_at": "2026-09-24T00:42:47-04:00",
+      "ex_real": -0.539310439764746,
+      "ex_imag": 0.09605721758557,
+      "ey_real": 0.7818024580871734,
+      "ey_imag": -0.7880022579544468,
+      "ez_real": -1.1087152041006485,
+      "ez_imag": -0.5238550511905731,
+      "tm_real": -0.5565155381641889,
+      "tm_imag": 0.07729622654949758,
       "te_real": 0.0,
       "te_imag": 0.0
     }
