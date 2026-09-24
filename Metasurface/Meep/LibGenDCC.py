@@ -72,6 +72,8 @@ def diffraction_order(field: np.ndarray, order_x: int = 0, order_y: int = 0) -> 
 def calculate_transmissions(
     reference_fields: dict[str, np.ndarray],
     pillar_fields: dict[str, np.ndarray],
+    reference_flux: float,
+    pillar_flux: float,
     incident_angle_deg: float = 0.0,
     period: float = period_list[0],
     order_x: int = 0,
@@ -137,6 +139,11 @@ def calculate_transmissions(
         },
         "power_flux_transmission": float(
             sum(abs(coefficient) ** 2 for coefficient in coefficients.values())
+        ),
+        "total_power_transmission": float(pillar_flux / reference_flux),
+        "transmission_magnitude": float(abs(coefficients["tm"])),
+        "transmission_phase_deg": float(
+            np.degrees(np.angle(coefficients["tm"])) % 360
         ),
     }
 
@@ -213,7 +220,7 @@ def Elim_Redundincies(r_x_list, r_y_list, theta_list):
 
     return unique_r_x, unique_r_y, unique_theta
 # %% Data saving functions
-def save_ellipse_pillar_plots(
+def save_ellipse_pillar_plot(
     pillar_fields: dict[str, np.ndarray],
     geometry: tuple[float, float, float],
     pillar_h: float,
@@ -221,37 +228,17 @@ def save_ellipse_pillar_plots(
     incident_angle: float,
     plot_directory: Path,
 ) -> None:
-    """Save three transmission-plane maps and one y=0 field-slice map."""
+    """Save the y=0 |Ex| field profile used in DatalibraryGenEllipse."""
     plot_directory.mkdir(exist_ok=True)
     r_x, r_y, theta = geometry
     name = (
         f"rx_{r_x:g}_ry_{r_y:g}_theta_{theta:g}_h_{pillar_h:g}_"
         f"period_{period:g}_angle_{incident_angle:g}"
     )
-    component_labels = {"ex": "Ex", "ey": "Ey", "ez": "Ez"}
-
-    for component, label in component_labels.items():
-        figure, axis = plt.subplots(figsize=(6, 5))
-        image = axis.imshow(
-            np.abs(pillar_fields[component]).T,
-            origin="lower",
-            extent=(-period / 2, period / 2, -period / 2, period / 2),
-            cmap="magma",
-        )
-        axis.set(
-            xlabel="x (um)",
-            ylabel="y (um)",
-            title=f"|{label}| at transmission monitor",
-        )
-        figure.colorbar(image, ax=axis, label=f"|{label}| (arbitrary units)")
-        figure.tight_layout()
-        figure.savefig(plot_directory / f"{name}_{label}.png", dpi=200)
-        plt.close(figure)
-
     cell_z = substrate_h + pillar_h + 2 * air_padding + 2 * dpml
     figure, axis = plt.subplots(figsize=(7, 5))
     image = axis.imshow(
-        np.squeeze(pillar_fields["y0_e_magnitude"]).T,
+        np.abs(pillar_fields["y0_ex"]).T,
         origin="lower",
         extent=(
             -period / 2,
@@ -264,10 +251,21 @@ def save_ellipse_pillar_plots(
     )
     axis.axhline(-substrate_h, color="cyan", linewidth=0.8)
     axis.axhline(0, color="cyan", linewidth=0.8)
-    axis.set(xlabel="x (um)", ylabel="z (um)", title="|E| at y = 0")
-    figure.colorbar(image, ax=axis, label="|E| (arbitrary units)")
+    source_z = -0.5 * cell_z + dpml + 0.35
+    monitor_z = 0.5 * cell_z - dpml - 0.35
+    axis.axhline(source_z, color="white", linestyle="--", linewidth=0.8)
+    axis.axhline(monitor_z, color="lime", linestyle="--", linewidth=0.8)
+    axis.set(
+        xlabel="x (um)",
+        ylabel="z (um)",
+        title=(
+            f"|Ex| at {wavelength:.3f} um, "
+            f"incident angle = {incident_angle:.1f} deg"
+        ),
+    )
+    figure.colorbar(image, ax=axis, label="|Ex| (arbitrary units)")
     figure.tight_layout()
-    figure.savefig(plot_directory / f"{name}_y0_E_magnitude.png", dpi=200)
+    figure.savefig(plot_directory / f"{name}_field_profile.png", dpi=200)
     plt.close(figure)
 
 def write_ellipse_pillar_library(
@@ -349,10 +347,20 @@ def run_unit_cell(
         size=mp.Vector3(period, period, 0),
     )
     dft = sim.add_dft_fields([mp.Ex,mp.Ey,mp.Ez], fcen, 0, 1, where=transmission_plane)
+    transmission_flux = sim.add_flux(
+        fcen,
+        0,
+        1,
+        mp.FluxRegion(
+            center=mp.Vector3(0, 0, monitor_z),
+            size=mp.Vector3(period, period, 0),
+            direction=mp.Z,
+        ),
+    )
     field_profile_dft = None
     if plot_field_profile:
         field_profile_dft = sim.add_dft_fields(
-            [mp.Ex, mp.Ey, mp.Ez],
+            [mp.Ex],
             fcen,
             0,
             1,
@@ -373,13 +381,12 @@ def run_unit_cell(
     fields = {
         'ex' : ex,
         'ey' : ey,
-        'ez' : ez
+        'ez' : ez,
+        'transmitted_flux': float(mp.get_fluxes(transmission_flux)[0]),
     }
     if field_profile_dft is not None:
-        fields["y0_e_magnitude"] = np.sqrt(
-            abs(sim.get_dft_array(field_profile_dft, mp.Ex, 0)) ** 2
-            + abs(sim.get_dft_array(field_profile_dft, mp.Ey, 0)) ** 2
-            + abs(sim.get_dft_array(field_profile_dft, mp.Ez, 0)) ** 2
+        fields["y0_ex"] = np.squeeze(
+            sim.get_dft_array(field_profile_dft, mp.Ex, 0)
         )
     return fields
 
@@ -437,6 +444,8 @@ def simulate_gds_unit_cell(
     transmission_and_phase = calculate_transmissions(
         reference_field,
         pillar_field,
+        reference_field["transmitted_flux"],
+        pillar_field["transmitted_flux"],
         incident_angle_deg,
         period=period,
     )
@@ -456,7 +465,9 @@ ELLIPSE_LIBRARY_COLUMNS = [
     "radius_x_um", "radius_y_um", "rotation_deg", "pillar_height_um",
     "period_um", "incident_angle_deg", "gds_path", "ex_real", "ex_imag",
     "ey_real", "ey_imag", "ez_real", "ez_imag", "tm_real", "tm_imag",
-    "te_real", "te_imag", "power_flux_transmission", "completed_at",
+    "te_real", "te_imag", "power_flux_transmission", "total_power_transmission",
+    "reference_transmitted_flux", "pillar_transmitted_flux",
+    "transmission_magnitude", "transmission_phase_deg", "completed_at",
 ]
 
 
@@ -543,7 +554,7 @@ def ellipse_pillar_sweeps(
             theta_deg=geometry[2],
         )
         response = simulation["normalized_response"]
-        save_ellipse_pillar_plots(
+        save_ellipse_pillar_plot(
             simulation["pillar_transmission_plane_fields"],
             geometry,
             pillar_h,
@@ -560,6 +571,15 @@ def ellipse_pillar_sweeps(
             "incident_angle_deg": incident_angle,
             "gds_path": str(gds_files[geometry]),
             "power_flux_transmission": response["power_flux_transmission"],
+            "total_power_transmission": response["total_power_transmission"],
+            "reference_transmitted_flux": reference_fields[reference_key][
+                "transmitted_flux"
+            ],
+            "pillar_transmitted_flux": simulation[
+                "pillar_transmission_plane_fields"
+            ]["transmitted_flux"],
+            "transmission_magnitude": response["transmission_magnitude"],
+            "transmission_phase_deg": response["transmission_phase_deg"],
             "completed_at": datetime.now().astimezone().isoformat(
                 timespec="seconds"
             ),
