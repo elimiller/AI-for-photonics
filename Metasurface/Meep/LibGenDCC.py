@@ -137,12 +137,12 @@ def calculate_transmissions(
             }
             for polarization, coefficient in coefficients.items()
         },
-        "power_flux_transmission": float(
+        "zero_order_power_estimate": float(
             sum(abs(coefficient) ** 2 for coefficient in coefficients.values())
         ),
-        "total_power_transmission": float(pillar_flux / reference_flux),
-        "transmission_magnitude": float(abs(coefficients["tm"])),
-        "transmission_phase_deg": float(
+        "total_transmitted_power_ratio": float(pillar_flux / reference_flux),
+        "zero_order_tm_magnitude": float(abs(coefficients["tm"])),
+        "zero_order_tm_phase_deg": float(
             np.degrees(np.angle(coefficients["tm"])) % 360
         ),
     }
@@ -228,7 +228,7 @@ def save_ellipse_pillar_plot(
     incident_angle: float,
     plot_directory: Path,
 ) -> None:
-    """Save the y=0 |Ex| field profile used in DatalibraryGenEllipse."""
+    """Save monitor fields and the DatalibraryGenEllipse y=0 |Ex| profile."""
     plot_directory.mkdir(exist_ok=True)
     r_x, r_y, theta = geometry
     name = (
@@ -236,7 +236,26 @@ def save_ellipse_pillar_plot(
         f"period_{period:g}_angle_{incident_angle:g}"
     )
     cell_z = substrate_h + pillar_h + 2 * air_padding + 2 * dpml
-    figure, axis = plt.subplots(figsize=(7, 5))
+    figure, axes = plt.subplots(2, 2, figsize=(12, 10))
+    component_labels = {"ex": "Ex", "ey": "Ey", "ez": "Ez"}
+
+    for axis, (component, label) in zip(
+        axes.flat[:3], component_labels.items(), strict=True
+    ):
+        image = axis.imshow(
+            np.abs(pillar_fields[component]).T,
+            origin="lower",
+            extent=(-period / 2, period / 2, -period / 2, period / 2),
+            cmap="magma",
+        )
+        axis.set(
+            xlabel="x (um)",
+            ylabel="y (um)",
+            title=f"|{label}| at transmission monitor",
+        )
+        figure.colorbar(image, ax=axis, label=f"|{label}| (arbitrary units)")
+
+    axis = axes[1, 1]
     image = axis.imshow(
         np.abs(pillar_fields["y0_ex"]).T,
         origin="lower",
@@ -273,7 +292,11 @@ def write_ellipse_pillar_library(
 ) -> None:
     """Write the simulation library as matching JSON and CSV tables."""
     library = {
-        "metadata": {"wavelength_um": wavelength, "length_unit": "um"},
+        "metadata": {
+            "wavelength_um": wavelength,
+            "length_unit": "um",
+            "field_definitions": ELLIPSE_LIBRARY_FIELD_DEFINITIONS,
+        },
         "simulations": simulations,
     }
     json_path.write_text(json.dumps(library, indent=2))
@@ -465,10 +488,41 @@ ELLIPSE_LIBRARY_COLUMNS = [
     "radius_x_um", "radius_y_um", "rotation_deg", "pillar_height_um",
     "period_um", "incident_angle_deg", "gds_path", "ex_real", "ex_imag",
     "ey_real", "ey_imag", "ez_real", "ez_imag", "tm_real", "tm_imag",
-    "te_real", "te_imag", "power_flux_transmission", "total_power_transmission",
-    "reference_transmitted_flux", "pillar_transmitted_flux",
-    "transmission_magnitude", "transmission_phase_deg", "completed_at",
+    "te_real", "te_imag", "zero_order_power_estimate",
+    "total_transmitted_power_ratio", "reference_transmission_plane_flux",
+    "pillar_transmission_plane_flux", "zero_order_tm_magnitude",
+    "zero_order_tm_phase_deg", "completed_at",
 ]
+
+ELLIPSE_LIBRARY_FIELD_DEFINITIONS = {
+    "zero_order_power_estimate": (
+        "abs(tm)^2 + abs(te)^2 from normalized zero-order field coefficients; "
+        "not an integrated flux measurement"
+    ),
+    "total_transmitted_power_ratio": (
+        "pillar transmission-plane flux divided by bare-reference "
+        "transmission-plane flux"
+    ),
+    "reference_transmission_plane_flux": (
+        "raw integrated z-directed Poynting flux for the bare reference"
+    ),
+    "pillar_transmission_plane_flux": (
+        "raw integrated z-directed Poynting flux for the pillar simulation"
+    ),
+    "zero_order_tm_magnitude": "magnitude of the normalized zero-order TM coefficient",
+    "zero_order_tm_phase_deg": (
+        "phase of the normalized zero-order TM coefficient, in degrees from 0 to 360"
+    ),
+}
+
+ELLIPSE_LIBRARY_LEGACY_FIELDS = {
+    "power_flux_transmission": "zero_order_power_estimate",
+    "total_power_transmission": "total_transmitted_power_ratio",
+    "reference_transmitted_flux": "reference_transmission_plane_flux",
+    "pillar_transmitted_flux": "pillar_transmission_plane_flux",
+    "transmission_magnitude": "zero_order_tm_magnitude",
+    "transmission_phase_deg": "zero_order_tm_phase_deg",
+}
 
 
 def ellipse_pillar_sweeps(
@@ -499,6 +553,10 @@ def ellipse_pillar_sweeps(
         if json_path.exists()
         else []
     )
+    for record in simulations:
+        for old_name, new_name in ELLIPSE_LIBRARY_LEGACY_FIELDS.items():
+            if old_name in record:
+                record[new_name] = record.pop(old_name)
     completed = {
         (
             record["radius_x_um"], record["radius_y_um"], record["rotation_deg"],
@@ -570,16 +628,18 @@ def ellipse_pillar_sweeps(
             "period_um": period,
             "incident_angle_deg": incident_angle,
             "gds_path": str(gds_files[geometry]),
-            "power_flux_transmission": response["power_flux_transmission"],
-            "total_power_transmission": response["total_power_transmission"],
-            "reference_transmitted_flux": reference_fields[reference_key][
+            "zero_order_power_estimate": response["zero_order_power_estimate"],
+            "total_transmitted_power_ratio": response[
+                "total_transmitted_power_ratio"
+            ],
+            "reference_transmission_plane_flux": reference_fields[reference_key][
                 "transmitted_flux"
             ],
-            "pillar_transmitted_flux": simulation[
+            "pillar_transmission_plane_flux": simulation[
                 "pillar_transmission_plane_fields"
             ]["transmitted_flux"],
-            "transmission_magnitude": response["transmission_magnitude"],
-            "transmission_phase_deg": response["transmission_phase_deg"],
+            "zero_order_tm_magnitude": response["zero_order_tm_magnitude"],
+            "zero_order_tm_phase_deg": response["zero_order_tm_phase_deg"],
             "completed_at": datetime.now().astimezone().isoformat(
                 timespec="seconds"
             ),
