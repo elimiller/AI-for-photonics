@@ -60,8 +60,29 @@ substrate_h = 1.0
 PILLAR_LAYER = (1, 0)
 POLARIZATION = mp.Ex # TM or P polarized
 fcen = 1 / wavelength
+MEEP_PROGRESS_INTERVAL = 5.0
+DECAY_LOG_CONTEXT = {}
 
 # %% Logging, calculation, cost reductions, and other functions to be used
+def log_decay_progress(running_sim: mp.Simulation) -> None:
+    """Print field decay for the currently running sweep case."""
+    field_magnitude = float(
+        abs(running_sim.get_field_point(POLARIZATION, DECAY_LOG_CONTEXT["point"]))
+    )
+    DECAY_LOG_CONTEXT["peak_field"] = max(
+        DECAY_LOG_CONTEXT["peak_field"], field_magnitude
+    )
+    peak_field = DECAY_LOG_CONTEXT["peak_field"]
+    field_ratio = field_magnitude / peak_field if peak_field else 0.0
+    if mp.am_master():
+        print(
+            f"{DECAY_LOG_CONTEXT['label']} decay t={running_sim.meep_time():.2f}, "
+            f"wall={time.perf_counter() - DECAY_LOG_CONTEXT['started']:.1f}s, "
+            f"field/peak={field_ratio:.3e}, squared={field_ratio**2:.3e}",
+            flush=True,
+        )
+
+
 def diffraction_order(field: np.ndarray, order_x: int = 0, order_y: int = 0) -> complex:
     """Extract one spatial Fourier coefficient from a transmission-plane field."""
     spectrum = np.fft.fft2(field) / field.size
@@ -320,6 +341,7 @@ def run_unit_cell(
     incident_angle_deg: float,
     theta_deg: float = 0.0,
     plot_field_profile: bool = False,
+    simulation_label: str = "",
 ) -> dict[str, np.ndarray]:
     """Return transmission-plane fields and, when requested, a y=0 field slice."""
     cell_z = substrate_h + pillar_h + 2 * air_padding + 2 * dpml
@@ -397,7 +419,16 @@ def run_unit_cell(
             ),
         )
 
+    DECAY_LOG_CONTEXT.update(
+        {
+            "label": simulation_label,
+            "point": mp.Vector3(0, 0, monitor_z),
+            "peak_field": 0.0,
+            "started": time.perf_counter(),
+        }
+    )
     sim.run(
+        mp.at_every(MEEP_PROGRESS_INTERVAL, log_decay_progress),
         until_after_sources=mp.stop_when_fields_decayed(
             50, POLARIZATION, mp.Vector3(0, 0, monitor_z), 1e-3
         )
@@ -421,9 +452,12 @@ def run_reference_unit_cell(
     pillar_h: float,
     period: float,
     incident_angle_deg: float,
+    simulation_label: str = "",
 ) -> dict[str, complex | float]:
     """Run the bare-substrate reference for one height/period/angle condition."""
-    return run_unit_cell([], pillar_h, period, incident_angle_deg)
+    return run_unit_cell(
+        [], pillar_h, period, incident_angle_deg, simulation_label=simulation_label
+    )
 
 
  
@@ -437,6 +471,7 @@ def simulate_gds_unit_cell(
     reference_field: dict[str, complex | float],
     plot_field_profile: bool = False,
     theta_deg: float = 0.0,
+    simulation_label: str = "",
 ) -> dict[str, object]:
     """Simulate one pillar GDS using an already-computed bare reference."""
     # The generator has already created a cell with this GDS top-cell name.
@@ -467,6 +502,7 @@ def simulate_gds_unit_cell(
         incident_angle_deg,
         theta_deg,
         plot_field_profile=plot_field_profile,
+        simulation_label=simulation_label,
     )
     transmission_and_phase = calculate_transmissions(
         reference_field,
@@ -592,6 +628,7 @@ def ellipse_pillar_sweeps(
     ):
         pillar_h, period, incident_angle = condition
         key = (*geometry, pillar_h, period, incident_angle)
+        simulation_label = f"[{index}/{total_simulations}]"
         timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
         if key in completed:
             print(
@@ -600,11 +637,11 @@ def ellipse_pillar_sweeps(
             )
             continue
 
-        print(f"[{index}/{total_simulations}] running {key}", flush=True)
+        print(f"{simulation_label} running {key}", flush=True)
         reference_key = (pillar_h, period, incident_angle)
         if reference_key not in reference_fields:
             reference_fields[reference_key] = run_reference_unit_cell(
-                pillar_h, period, incident_angle
+                pillar_h, period, incident_angle, simulation_label
             )
         simulation = simulate_gds_unit_cell(
             gds_files[geometry],
@@ -614,6 +651,7 @@ def ellipse_pillar_sweeps(
             reference_fields[reference_key],
             plot_field_profile=True,
             theta_deg=geometry[2],
+            simulation_label=simulation_label,
         )
         response = simulation["normalized_response"]
         save_ellipse_pillar_plot(
