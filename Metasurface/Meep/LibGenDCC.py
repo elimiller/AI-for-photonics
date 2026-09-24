@@ -37,7 +37,7 @@ theta_list = [0]
 wavelength = 0.532             # design wavelength [um]
 period_list = [0.60]                 # square-lattice pitch [um]
 pillar_h_list = [0.85]
-incident_angle_list = [0.0]          # polar angle in degrees; tilt is in the x-z plane
+incident_angle_list = [10]       # polar angle in degrees; tilt is in the x-z plane
 RUN_SIMULATION = False
 n_SiN = 2.0
 n_sio2 = 1.46
@@ -60,31 +60,8 @@ substrate_h = 1.0
 PILLAR_LAYER = (1, 0)
 POLARIZATION = mp.Ex # TM or P polarized
 fcen = 1 / wavelength
-MEEP_PROGRESS_INTERVAL = 5.0  # simulation-time units between progress messages
 
 # %% Logging, calculation, cost reductions, and other functions to be used
-def log_decay_progress(
-    running_sim: mp.Simulation,
-    monitor_point: mp.Vector3,
-    progress_state: dict,
-    wall_clock_start: float,
-) -> None:
-    field_magnitude = float(
-        abs(running_sim.get_field_point(POLARIZATION, monitor_point))
-    )
-    progress_state["peak_field"] = max(
-        progress_state["peak_field"], field_magnitude
-    )
-    peak_field = progress_state["peak_field"]
-    relative_field = field_magnitude / peak_field if peak_field else 0.0
-    if mp.am_master():
-        print(
-            f"[Meep decay] t={running_sim.meep_time():.2f}, "
-            f"wall={time.perf_counter() - wall_clock_start:.1f}s, "
-            f"field/peak={relative_field:.3e}, threshold=1.000e-03",
-            flush=True,
-        )
-
 def diffraction_order(field: np.ndarray, order_x: int = 0, order_y: int = 0) -> complex:
     """Extract one spatial Fourier coefficient from a transmission-plane field."""
     spectrum = np.fft.fft2(field) / field.size
@@ -385,23 +362,7 @@ def run_unit_cell(
             ),
         )
 
-    progress_state = {"peak_field": 0.0}
-    wall_clock_start = time.perf_counter()
-    monitor_point = mp.Vector3(0, 0, monitor_z)
-
-    def report_decay_progress(running_sim: mp.Simulation) -> None:
-        log_decay_progress(
-            running_sim,
-            monitor_point,
-            progress_state,
-            wall_clock_start,
-        )
-
     sim.run(
-        mp.at_every(
-            MEEP_PROGRESS_INTERVAL,
-            report_decay_progress,
-        ),
         until_after_sources=mp.stop_when_fields_decayed(
             50, POLARIZATION, mp.Vector3(0, 0, monitor_z), 1e-3
         )
@@ -549,60 +510,72 @@ def ellipse_pillar_sweeps(
         for geometry in geometries
     }
     reference_fields = {}
+    conditions = list(product(pillar_h_list, period_list, incident_angle_list))
+    total_simulations = len(geometries) * len(conditions)
+    sweep_started = time.perf_counter()
 
-    for geometry in geometries:
-        for pillar_h, period, incident_angle in product(
-            pillar_h_list, period_list, incident_angle_list
-        ):
-            key = (*geometry, pillar_h, period, incident_angle)
-            timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
-            if key in completed:
-                print(f"[{timestamp}] already in library; skipped {key}", flush=True)
-                continue
+    for index, (geometry, condition) in enumerate(
+        product(geometries, conditions), start=1
+    ):
+        pillar_h, period, incident_angle = condition
+        key = (*geometry, pillar_h, period, incident_angle)
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        if key in completed:
+            print(
+                f"[{index}/{total_simulations}] [{timestamp}] skipped {key}",
+                flush=True,
+            )
+            continue
 
-            reference_key = (pillar_h, period, incident_angle)
-            if reference_key not in reference_fields:
-                reference_fields[reference_key] = run_reference_unit_cell(
-                    pillar_h, period, incident_angle
-                )
-            simulation = simulate_gds_unit_cell(
-                gds_files[geometry],
-                pillar_h,
-                period,
-                incident_angle,
-                reference_fields[reference_key],
-                plot_field_profile=True,
-                theta_deg=geometry[2],
+        print(f"[{index}/{total_simulations}] running {key}", flush=True)
+        reference_key = (pillar_h, period, incident_angle)
+        if reference_key not in reference_fields:
+            reference_fields[reference_key] = run_reference_unit_cell(
+                pillar_h, period, incident_angle
             )
-            response = simulation["normalized_response"]
-            save_ellipse_pillar_plots(
-                simulation["pillar_transmission_plane_fields"],
-                geometry,
-                pillar_h,
-                period,
-                incident_angle,
-                plot_directory,
-            )
-            record = {
-                "radius_x_um": geometry[0],
-                "radius_y_um": geometry[1],
-                "rotation_deg": geometry[2],
-                "pillar_height_um": pillar_h,
-                "period_um": period,
-                "incident_angle_deg": incident_angle,
-                "gds_path": str(gds_files[geometry]),
-                "power_flux_transmission": response["power_flux_transmission"],
-                "completed_at": datetime.now().astimezone().isoformat(
-                    timespec="seconds"
-                ),
-            }
-            for component in ("ex", "ey", "ez", "tm", "te"):
-                record[f"{component}_real"] = response[component]["real"]
-                record[f"{component}_imag"] = response[component]["imag"]
-            simulations.append(record)
-            completed.add(key)
-            write_ellipse_pillar_library(json_path, csv_path, simulations)
-            print(f"[{record['completed_at']}] completed {key}", flush=True)
+        simulation = simulate_gds_unit_cell(
+            gds_files[geometry],
+            pillar_h,
+            period,
+            incident_angle,
+            reference_fields[reference_key],
+            plot_field_profile=True,
+            theta_deg=geometry[2],
+        )
+        response = simulation["normalized_response"]
+        save_ellipse_pillar_plots(
+            simulation["pillar_transmission_plane_fields"],
+            geometry,
+            pillar_h,
+            period,
+            incident_angle,
+            plot_directory,
+        )
+        record = {
+            "radius_x_um": geometry[0],
+            "radius_y_um": geometry[1],
+            "rotation_deg": geometry[2],
+            "pillar_height_um": pillar_h,
+            "period_um": period,
+            "incident_angle_deg": incident_angle,
+            "gds_path": str(gds_files[geometry]),
+            "power_flux_transmission": response["power_flux_transmission"],
+            "completed_at": datetime.now().astimezone().isoformat(
+                timespec="seconds"
+            ),
+        }
+        for component in ("ex", "ey", "ez", "tm", "te"):
+            record[f"{component}_real"] = response[component]["real"]
+            record[f"{component}_imag"] = response[component]["imag"]
+        simulations.append(record)
+        completed.add(key)
+        write_ellipse_pillar_library(json_path, csv_path, simulations)
+        elapsed = time.perf_counter() - sweep_started
+        print(
+            f"[{index}/{total_simulations}] [{record['completed_at']}] completed; "
+            f"sweep wall={elapsed:.1f}s",
+            flush=True,
+        )
 
     write_ellipse_pillar_library(json_path, csv_path, simulations)
     return simulations

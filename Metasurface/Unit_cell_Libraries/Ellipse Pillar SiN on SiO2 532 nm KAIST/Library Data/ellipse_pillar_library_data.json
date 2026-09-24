@@ -1,0 +1,50 @@
+{
+  "metadata": {
+    "wavelength_um": 0.532,
+    "length_unit": "um"
+  },
+  "simulations": [
+    {
+      "radius_x_um": 0.25,
+      "radius_y_um": 0.25,
+      "rotation_deg": 0.0,
+      "pillar_height_um": 0.85,
+      "period_um": 0.6,
+      "incident_angle_deg": 0.0,
+      "gds_path": "/home/eli/Grad/AI-for-photonics/Metasurface/Unit_cell_Libraries/Ellipse Pillar SiN on SiO2 532 nm KAIST/GDS Library/elliptical_pillar_rx_0.25_ry_0.25_theta_0.0.gds",
+      "power_flux_transmission": 0.7822784820630376,
+      "completed_at": "2026-09-23T22:17:02-04:00",
+      "ex_real": -0.7656265538725155,
+      "ex_imag": 0.4428255436041757,
+      "ey_real": 427.7131749325266,
+      "ey_imag": 603.6723998288207,
+      "ez_real": 628.6629458869206,
+      "ez_imag": -2193.1142926474163,
+      "tm_real": -0.7656265538725155,
+      "tm_imag": 0.4428255436041757,
+      "te_real": 0.0,
+      "te_imag": 0.0
+    },
+    {
+      "radius_x_um": 0.25,
+      "radius_y_um": 0.25,
+      "rotation_deg": 0.0,
+      "pillar_height_um": 0.85,
+      "period_um": 0.6,
+      "incident_angle_deg": 10.0,
+      "gds_path": "/home/eli/Grad/AI-for-photonics/Metasurface/Unit_cell_Libraries/Ellipse Pillar SiN on SiO2 532 nm KAIST/GDS Library/elliptical_pillar_rx_0.25_ry_0.25_theta_0.0.gds",
+      "power_flux_transmission": 0.584966153126264,
+      "completed_at": "2026-09-23T22:37:48-04:00",
+      "ex_real": -0.5338718559891935,
+      "ex_imag": 0.5381297484094575,
+      "ey_real": -0.5455479864156659,
+      "ey_imag": 0.17376770216958845,
+      "ez_real": -0.9345475147748024,
+      "ez_imag": 0.45470061187666466,
+      "tm_real": -0.5459870843007508,
+      "tm_imag": 0.5355971031503333,
+      "te_real": 0.0,
+      "te_imag": 0.0
+    }
+  ]
+}
