@@ -236,6 +236,79 @@ def Elim_Redundincies(r_x_list, r_y_list, theta_list):
         unique_theta.append(theta)
 
     return unique_r_x, unique_r_y, unique_theta
+# %% Data saving functions
+def save_ellipse_pillar_plots(
+    pillar_fields: dict[str, np.ndarray],
+    geometry: tuple[float, float, float],
+    pillar_h: float,
+    period: float,
+    incident_angle: float,
+    plot_directory: Path,
+) -> None:
+    """Save three transmission-plane maps and one y=0 field-slice map."""
+    plot_directory.mkdir(exist_ok=True)
+    r_x, r_y, theta = geometry
+    name = (
+        f"rx_{r_x:g}_ry_{r_y:g}_theta_{theta:g}_h_{pillar_h:g}_"
+        f"period_{period:g}_angle_{incident_angle:g}"
+    )
+    component_labels = {"ex": "Ex", "ey": "Ey", "ez": "Ez"}
+
+    for component, label in component_labels.items():
+        figure, axis = plt.subplots(figsize=(6, 5))
+        image = axis.imshow(
+            np.abs(pillar_fields[component]).T,
+            origin="lower",
+            extent=(-period / 2, period / 2, -period / 2, period / 2),
+            cmap="magma",
+        )
+        axis.set(
+            xlabel="x (um)",
+            ylabel="y (um)",
+            title=f"|{label}| at transmission monitor",
+        )
+        figure.colorbar(image, ax=axis, label=f"|{label}| (arbitrary units)")
+        figure.tight_layout()
+        figure.savefig(plot_directory / f"{name}_{label}.png", dpi=200)
+        plt.close(figure)
+
+    cell_z = substrate_h + pillar_h + 2 * air_padding + 2 * dpml
+    figure, axis = plt.subplots(figsize=(7, 5))
+    image = axis.imshow(
+        np.squeeze(pillar_fields["y0_e_magnitude"]).T,
+        origin="lower",
+        extent=(
+            -period / 2,
+            period / 2,
+            -cell_z / 2 + dpml,
+            cell_z / 2 - dpml,
+        ),
+        aspect="auto",
+        cmap="magma",
+    )
+    axis.axhline(-substrate_h, color="cyan", linewidth=0.8)
+    axis.axhline(0, color="cyan", linewidth=0.8)
+    axis.set(xlabel="x (um)", ylabel="z (um)", title="|E| at y = 0")
+    figure.colorbar(image, ax=axis, label="|E| (arbitrary units)")
+    figure.tight_layout()
+    figure.savefig(plot_directory / f"{name}_y0_E_magnitude.png", dpi=200)
+    plt.close(figure)
+
+def write_ellipse_pillar_library(
+    json_path: Path, csv_path: Path, simulations: list[dict[str, object]]
+) -> None:
+    """Write the simulation library as matching JSON and CSV tables."""
+    library = {
+        "metadata": {"wavelength_um": wavelength, "length_unit": "um"},
+        "simulations": simulations,
+    }
+    json_path.write_text(json.dumps(library, indent=2))
+    with csv_path.open("w", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=ELLIPSE_LIBRARY_COLUMNS)
+        writer.writeheader()
+        writer.writerows(simulations)
+
+
 
 # %% Run an individual sim
 
@@ -246,8 +319,8 @@ def run_unit_cell(
     incident_angle_deg: float,
     theta_deg: float = 0.0,
     plot_field_profile: bool = False,
-) -> complex:
-    """Return the mean complex TE field at the transmission plane."""
+) -> dict[str, np.ndarray]:
+    """Return transmission-plane fields and, when requested, a y=0 field slice."""
     cell_z = substrate_h + pillar_h + 2 * air_padding + 2 * dpml
     cell = mp.Vector3(period, period, cell_z)
     monitor_z = 0.5 * cell_z - dpml - 0.35
@@ -300,6 +373,18 @@ def run_unit_cell(
         size=mp.Vector3(period, period, 0),
     )
     dft = sim.add_dft_fields([mp.Ex,mp.Ey,mp.Ez], fcen, 0, 1, where=transmission_plane)
+    field_profile_dft = None
+    if plot_field_profile:
+        field_profile_dft = sim.add_dft_fields(
+            [mp.Ex, mp.Ey, mp.Ez],
+            fcen,
+            0,
+            1,
+            where=mp.Volume(
+                center=mp.Vector3(0, 0, 0),
+                size=mp.Vector3(period, 0, cell_z - 2 * dpml),
+            ),
+        )
 
     progress_state = {"peak_field": 0.0}
     wall_clock_start = time.perf_counter()
@@ -322,11 +407,18 @@ def run_unit_cell(
     ex = sim.get_dft_array(dft, mp.Ex, 0)
     ey = sim.get_dft_array(dft, mp.Ey, 0)
     ez = sim.get_dft_array(dft, mp.Ez, 0)
-    return {
+    fields = {
         'ex' : ex,
         'ey' : ey,
         'ez' : ez
     }
+    if field_profile_dft is not None:
+        fields["y0_e_magnitude"] = np.sqrt(
+            abs(sim.get_dft_array(field_profile_dft, mp.Ex, 0)) ** 2
+            + abs(sim.get_dft_array(field_profile_dft, mp.Ey, 0)) ** 2
+            + abs(sim.get_dft_array(field_profile_dft, mp.Ez, 0)) ** 2
+        )
+    return fields
 
 def run_reference_unit_cell(
     pillar_h: float,
@@ -397,7 +489,15 @@ def simulate_gds_unit_cell(
         "pillar_transmission_plane_fields": pillar_field,
         "normalized_response": transmission_and_phase,
     }
-# %% Loop through sim
+# %% Loop through sim function
+ELLIPSE_LIBRARY_COLUMNS = [
+    "radius_x_um", "radius_y_um", "rotation_deg", "pillar_height_um",
+    "period_um", "incident_angle_deg", "gds_path", "ex_real", "ex_imag",
+    "ey_real", "ey_imag", "ez_real", "ez_imag", "tm_real", "tm_imag",
+    "te_real", "te_imag", "power_flux_transmission", "completed_at",
+]
+
+
 def ellipse_pillar_sweeps(
     r_x_list,
     r_y_list,
@@ -408,12 +508,7 @@ def ellipse_pillar_sweeps(
     gds_lib_path,
     data_lib_path,
 ) -> list[dict[str, object]]:
-    """Run only the new ellipse-pillar simulations from the supplied sweeps.
-
-    Results are kept in both a JSON library and a CSV table in
-    ``data_lib_path``.  The JSON contains the complete compact result record;
-    the CSV is convenient to open in a spreadsheet.
-    """
+    """Run only new ellipse-pillar simulations from the supplied sweeps."""
     unique_r_x, unique_r_y, unique_theta = Elim_Redundincies(
         r_x_list, r_y_list, theta_list
     )
@@ -424,31 +519,24 @@ def ellipse_pillar_sweeps(
 
     json_path = data_lib_path / "ellipse_pillar_library_data.json"
     csv_path = data_lib_path / "ellipse_pillar_library_data.csv"
-    library = (
-        json.loads(json_path.read_text())
+    plot_directory = data_lib_path / "Simulation Plots"
+    plot_directory.mkdir(exist_ok=True)
+    simulations = (
+        json.loads(json_path.read_text())["simulations"]
         if json_path.exists()
-        else {"metadata": {"wavelength_um": wavelength, "length_unit": "um"}, "results": []}
+        else []
     )
-    results = library.setdefault("results", [])
-
-    def simulation_key(geometry, condition):
-        return (
-            float(geometry["radius_x_um"]),
-            float(geometry["radius_y_um"]),
-            float(geometry["rotation_deg"]),
-            float(condition["pillar_height_um"]),
-            float(condition["period_um"]),
-            float(condition["incident_angle_deg"]),
-        )
-
     completed = {
-        simulation_key(record["geometry"], record["simulation_condition"])
-        for record in results
+        (
+            record["radius_x_um"], record["radius_y_um"], record["rotation_deg"],
+            record["pillar_height_um"], record["period_um"],
+            record["incident_angle_deg"],
+        )
+        for record in simulations
     }
 
-    # ``Elim_Redundincies`` returns parallel lists, so export each geometry as
-    # a one-item sweep.  Passing the full lists would recreate their Cartesian
-    # product and bring the geometric duplicates back.
+    # ``Elim_Redundincies`` returns parallel lists, so export one geometry at
+    # a time. Passing the full lists would recreate their Cartesian product.
     gds_files = {
         geometry: generate_unit_cell_gds_lib(
             elliptical_pillar_gds,
@@ -461,55 +549,11 @@ def ellipse_pillar_sweeps(
     }
     reference_fields = {}
 
-    def save_library() -> None:
-        json_path.write_text(json.dumps(library, indent=2))
-        columns = [
-            "radius_x_um", "radius_y_um", "rotation_deg",
-            "pillar_height_um", "period_um", "incident_angle_deg",
-            "ex_real", "ex_imag", "ey_real", "ey_imag",
-            "ez_real", "ez_imag", "tm_real", "tm_imag",
-            "te_real", "te_imag", "power_flux_transmission", "completed_at",
-        ]
-        with csv_path.open("w", newline="") as csv_file:
-            writer = csv.DictWriter(csv_file, fieldnames=columns)
-            writer.writeheader()
-            for record in results:
-                geometry = record["geometry"]
-                condition = record["simulation_condition"]
-                response = record["normalized_response"]
-                row = {
-                    "radius_x_um": geometry["radius_x_um"],
-                    "radius_y_um": geometry["radius_y_um"],
-                    "rotation_deg": geometry["rotation_deg"],
-                    **condition,
-                    "completed_at": record.get("completed_at", ""),
-                }
-                for component in ("ex", "ey", "ez", "tm", "te"):
-                    coefficient = response.get(component, {})
-                    if component == "tm" and not coefficient:
-                        coefficient = response.get("complex_transmission_coefficient", {})
-                    row[f"{component}_real"] = coefficient.get("real", "")
-                    row[f"{component}_imag"] = coefficient.get("imag", "")
-                row["power_flux_transmission"] = response.get(
-                    "power_flux_transmission", response.get("power_transmission", "")
-                )
-                writer.writerow(row)
-
     for geometry in geometries:
         for pillar_h, period, incident_angle in product(
             pillar_h_list, period_list, incident_angle_list
         ):
-            condition = {
-                "pillar_height_um": pillar_h,
-                "period_um": period,
-                "incident_angle_deg": incident_angle,
-            }
-            geometry_metadata = {
-                "radius_x_um": geometry[0],
-                "radius_y_um": geometry[1],
-                "rotation_deg": geometry[2],
-            }
-            key = simulation_key(geometry_metadata, condition)
+            key = (*geometry, pillar_h, period, incident_angle)
             timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
             if key in completed:
                 print(f"[{timestamp}] already in library; skipped {key}", flush=True)
@@ -526,28 +570,42 @@ def ellipse_pillar_sweeps(
                 period,
                 incident_angle,
                 reference_fields[reference_key],
+                plot_field_profile=True,
                 theta_deg=geometry[2],
             )
             response = simulation["normalized_response"]
-            results.append(
-                {
-                    "geometry": {
-                        **geometry_metadata,
-                        "geometry_type": "elliptical_pillar",
-                        "gds_path": str(gds_files[geometry]),
-                    },
-                    "simulation_condition": condition,
-                    "normalized_response": response,
-                    "completed_at": datetime.now().astimezone().isoformat(
-                        timespec="seconds"
-                    ),
-                }
+            save_ellipse_pillar_plots(
+                simulation["pillar_transmission_plane_fields"],
+                geometry,
+                pillar_h,
+                period,
+                incident_angle,
+                plot_directory,
             )
+            record = {
+                "radius_x_um": geometry[0],
+                "radius_y_um": geometry[1],
+                "rotation_deg": geometry[2],
+                "pillar_height_um": pillar_h,
+                "period_um": period,
+                "incident_angle_deg": incident_angle,
+                "gds_path": str(gds_files[geometry]),
+                "power_flux_transmission": response["power_flux_transmission"],
+                "completed_at": datetime.now().astimezone().isoformat(
+                    timespec="seconds"
+                ),
+            }
+            for component in ("ex", "ey", "ez", "tm", "te"):
+                record[f"{component}_real"] = response[component]["real"]
+                record[f"{component}_imag"] = response[component]["imag"]
+            simulations.append(record)
             completed.add(key)
-            save_library()
-            print(
-                f"[{results[-1]['completed_at']}] completed {key}", flush=True
-            )
+            write_ellipse_pillar_library(json_path, csv_path, simulations)
+            print(f"[{record['completed_at']}] completed {key}", flush=True)
 
-    save_library()
-    return results
+    write_ellipse_pillar_library(json_path, csv_path, simulations)
+    return simulations
+
+# %% Initial Notebook test
+ellipse_pillar_sweeps(r_x_list,r_y_list,theta_list,pillar_h_list,incident_angle_list,gds_lib_path,data_lib_path)
+# %% Data processing before running sim
