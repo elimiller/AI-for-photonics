@@ -42,12 +42,13 @@ def sellfit(x):
 print(sellfit(-0.248)) # Normalized wavelength
 
 # %% Manual params
+
+theta_list =  [0] 
+wavelength = 0.532             # design wavelength [um]
+period_list = [0.300,0.350,0.400]            # square-lattice pitch [um]
+pillar_h_list = [0.550,0.650,0.700]
 r_x_list = np.linspace(0.035,0.110,4)
 r_y_list = np.linspace(0.035,0.110,4)
-theta_list = np.linspace(0,180,4)
-wavelength = 0.532             # design wavelength [um]
-period_list = [0.300]            # square-lattice pitch [um]
-pillar_h_list = [0.700]
 incident_angle_list = [0]# polar angle in degrees; tilt is in the x-z plane
 RUN_SIMULATION = False
 n_SiN = sellfit(-0.248)
@@ -412,8 +413,6 @@ def run_unit_cell(
     symmetries = []
     if use_symmetries and theta_deg == 0:
         symmetries.append(mp.Mirror(mp.Y, phase=+1))
-        if incident_angle_deg == 0:
-            symmetries.append(mp.Mirror(mp.X, phase=-1))
 
     def bloch_phase(position: mp.Vector3) -> complex:
         """Apply the x-dependent phase of the oblique Bloch plane wave."""
@@ -897,11 +896,72 @@ def ellipse_pillar_sweeps(
     write_ellipse_pillar_library(json_path, csv_path, simulations)
     return simulations
 
+
+def constrained_radius_sweeps(
+    pillar_heights: Iterable[float],
+    periods: Iterable[float],
+    incident_angles: Iterable[float],
+    theta_list: Iterable[float],
+    gds_lib_path: Path,
+    data_lib_path: Path,
+    radius_samples: int = 4,
+    minimum_radius_um: float = 0.030,
+    edge_clearance_um: float = 0.080,
+    circles_only: bool = False,
+) -> None:
+    """Sweep radii bounded separately for every height/period condition.
+
+    The radius interval is ``[max(minimum_radius_um, height / 20),
+    (period - edge_clearance_um) / 2]``.  One invocation of
+    ``ellipse_pillar_sweeps`` is made per height/period/angle condition, so
+    all radii for that condition share the same incident and reference runs.
+    """
+    if radius_samples < 1:
+        raise ValueError("radius_samples must be at least one.")
+    theta_values = list(map(float, theta_list))
+
+    for pillar_h, period, incident_angle in product(
+        map(float, pillar_heights), map(float, periods), map(float, incident_angles)
+    ):
+        minimum_radius = max(minimum_radius_um, pillar_h / 20)
+        maximum_radius = (period - edge_clearance_um) / 2
+        if minimum_radius > maximum_radius:
+            print(
+                f"skipping h={pillar_h:g} um, p={period:g} um, "
+                f"angle={incident_angle:g} deg: "
+                f"r_min={minimum_radius:g} um > r_max={maximum_radius:g} um",
+                flush=True,
+            )
+            continue
+
+        radii = np.linspace(minimum_radius, maximum_radius, radius_samples)
+        print(
+            f"h={pillar_h:g} um, p={period:g} um, angle={incident_angle:g} deg: "
+            f"radii={radii}",
+            flush=True,
+        )
+        ellipse_pillar_sweeps(
+            radii,
+            radii,
+            theta_values,
+            [pillar_h],
+            [period],
+            [incident_angle],
+            gds_lib_path,
+            data_lib_path,
+            circles_only=circles_only,
+        )
+
+
 # %% Initial Notebook test/ sim run
-ellipse_pillar_sweeps(
-    r_x_list, r_y_list,theta_list,
-    pillar_h_list, period_list, incident_angle_list,
-    gds_lib_path, data_lib_path,
+constrained_radius_sweeps(
+    pillar_h_list,
+    period_list,
+    incident_angle_list,
+    theta_list,
+    gds_lib_path,
+    data_lib_path,
+    radius_samples=4,
     circles_only=False,
 )
 # %% Post sim processing and phase coverage plot
