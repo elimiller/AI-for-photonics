@@ -864,8 +864,8 @@ def ellipse_pillar_sweeps(
     write_ellipse_pillar_library(json_path, csv_path, simulations)
     return simulations
 
-# %% Initial Notebook test
-ellipse_pillar_sweeps(r_x_list[0],r_y_list[0],theta_list[0],pillar_h_list[0],period_list[0],incident_angle_list[0],gds_lib_path,data_lib_path)
+# %% Initial Notebook test/ sim run
+ellipse_pillar_sweeps([r_x_list[0]],[r_y_list[0]],[theta_list[0]],[pillar_h_list[1]],[period_list[0]],[incident_angle_list[0]],gds_lib_path,data_lib_path)
 # %% Post sim processing and phase coverage plot
 def plot_phase_coverage(
     csv_path: Path | None = None,
@@ -1012,4 +1012,5 @@ def plot_phase_coverage(
 
 # %% Plot
 plot_phase_coverage()
+
 # %%
