@@ -53,7 +53,8 @@ incident_angle_list = [0]# polar angle in degrees; tilt is in the x-z plane
 RUN_SIMULATION = False
 n_SiN = sellfit(-0.248)
 n_sio2 = 1.46
-resolution = 75               # pixels / um; increase after convergence test
+resolution = 100               # pixels / um; increase after convergence test
+courant = 0.25                # conservative FDTD timestep for small SiN features
 dpml = 0.8                    # z-only absorbing boundary thickness [um]
 air_padding = 1.0             # air above and below the structure [um]
 substrate_h = 1.0 
@@ -70,7 +71,7 @@ substrate_h = 1.0
 
 # %% Create sim
 PILLAR_LAYER = (1, 0)
-POLARIZATION = mp.Ex # TM or P polarized
+POLARIZATION = mp.Ey # TM or P polarized
 fcen = 1 / wavelength
 MEEP_PROGRESS_INTERVAL = 5.0
 NORMALIZATION_TOLERANCE = 1e-12
@@ -411,8 +412,10 @@ def run_unit_cell(
     k_point = mp.Vector3(fcen * np.sin(incident_angle_rad), 0, 0)
 
     symmetries = []
-    if use_symmetries and theta_deg == 0:
-        symmetries.append(mp.Mirror(mp.Y, phase=+1))
+    # if use_symmetries and theta_deg == 0:
+    #     symmetries.append(mp.Mirror(mp.Y, phase=-1))
+    #     if incident_angle_deg == 0:
+    #         symmetries.append(mp.Mirror(mp.X, phase=1))
 
     def bloch_phase(position: mp.Vector3) -> complex:
         """Apply the x-dependent phase of the oblique Bloch plane wave."""
@@ -441,8 +444,9 @@ def run_unit_cell(
             )
         ],
         k_point=k_point,
-        symmetries=symmetries,
+        # symmetries=symmetries,
         resolution=resolution,
+        Courant=courant,
         default_material=mp.air,
     )
     transmission_plane = mp.Volume(
@@ -951,7 +955,21 @@ def constrained_radius_sweeps(
             data_lib_path,
             circles_only=circles_only,
         )
-
+# %% Overflow fixing
+# Control: keep the normal-incidence, unrotated quarter-cell symmetries, but
+# use a 60 nm minor radius (9 grid pixels at resolution 75).  If this is
+# stable, repeat with r_y_list=[0.030] while leaving every other input fixed.
+ellipse_pillar_sweeps(
+    r_x_list=[0.05666666666666666],
+    r_y_list=[0.030],
+    theta_list=[0],
+    pillar_h_list=[0.550],
+    period_list=[0.300],
+    incident_angle_list=[0],
+    gds_lib_path=gds_lib_path,
+    data_lib_path=data_lib_path,
+    circles_only=False,
+)
 
 # %% Initial Notebook test/ sim run
 constrained_radius_sweeps(
