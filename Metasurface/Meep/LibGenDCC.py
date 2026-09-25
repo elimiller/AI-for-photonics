@@ -42,12 +42,12 @@ def sellfit(x):
 print(sellfit(-0.248)) # Normalized wavelength
 
 # %% Manual params
-r_x_list = np.linspace(0.060,0.110,4)
-r_y_list = np.linspace(0.060,0.110,4)
+r_x_list = np.linspace(0.030,0.110,4)
+r_y_list = np.linspace(0.030,0.110,4)
 theta_list = np.linspace(0,180,4)
 wavelength = 0.532             # design wavelength [um]
-period_list = [0.300]             # square-lattice pitch [um]
-pillar_h_list = [0.600]
+period_list = [0.300,0.400]             # square-lattice pitch [um]
+pillar_h_list = [0.400,0.500,0.600]
 incident_angle_list = [0,5,10]# polar angle in degrees; tilt is in the x-z plane
 RUN_SIMULATION = False
 n_SiN = sellfit(-0.248)
@@ -72,6 +72,9 @@ PILLAR_LAYER = (1, 0)
 POLARIZATION = mp.Ex # TM or P polarized
 fcen = 1 / wavelength
 MEEP_PROGRESS_INTERVAL = 5.0
+NORMALIZATION_TOLERANCE = 1e-12
+POWER_BALANCE_TOLERANCE = 2e-2
+LIBRARY_SCHEMA_VERSION = 2
 DECAY_LOG_CONTEXT = {}
 
 # %% Logging, calculation, cost reductions, and other functions to be used
@@ -104,30 +107,34 @@ def diffraction_order(field: np.ndarray, order_x: int = 0, order_y: int = 0) -> 
 def calculate_transmissions(
     reference_fields: dict[str, np.ndarray],
     pillar_fields: dict[str, np.ndarray],
+    incident_fields: dict[str, np.ndarray],
     reference_flux: float,
     pillar_flux: float,
+    incident_flux: float,
+    reflected_flux: float | None = None,
     incident_angle_deg: float = 0.0,
     period: float = period_list[0],
     order_x: int = 0,
     order_y: int = 0,
     medium_index: float = 1.0,
 ) -> dict[str, object]:
-    """Store Cartesian responses and normalized TE/TM field coefficients.
+    """Return zero-order responses normalized to the nonzero incident TM mode.
 
     For p-polarized (TM) light in the x-z plane, the electric field has both
     x and z components at oblique incidence.  Projecting onto the TM unit
     polarization includes both components in the reported ``tm`` response.
+
+    Every Cartesian component uses the *same* incident TM denominator.  In
+    particular, ``Ey`` is a cross-polarized response and must not be divided
+    by the reference ``Ey`` field: symmetry makes that reference field zero
+    for an unrotated ellipse.
     """
-    reference_order = {
-        component: diffraction_order(reference_fields[component], order_x, order_y)
-        for component in ("ex", "ey", "ez")
-    }
     pillar_order = {
         component: diffraction_order(pillar_fields[component], order_x, order_y)
         for component in ("ex", "ey", "ez")
     }
-    component_coefficients = {
-        component: pillar_order[component] / reference_order[component]
+    incident_order = {
+        component: diffraction_order(incident_fields[component], order_x, order_y)
         for component in ("ex", "ey", "ez")
     }
 
@@ -143,16 +150,42 @@ def calculate_transmissions(
 
     tm_vector = np.array([kz, 0.0, -kx], dtype=float)
     tm_vector /= np.linalg.norm(tm_vector)
-    te_vector = np.array([-ky, kx, 0.0], dtype=float)
-    te_vector /= np.linalg.norm(te_vector)
-    tm_reference = np.dot(tm_vector, [reference_order["ex"], reference_order["ey"], reference_order["ez"]])
+    transverse_k = np.hypot(kx, ky)
+    # At normal incidence the usual s-vector formula is degenerate.  The
+    # chosen basis is continuous with the x-z incidence plane and the Ex
+    # source: TM=x and TE=y.
+    te_vector = (
+        np.array([0.0, 1.0, 0.0], dtype=float)
+        if transverse_k <= NORMALIZATION_TOLERANCE
+        else np.array([-ky, kx, 0.0], dtype=float) / transverse_k
+    )
+    tm_incident = np.dot(
+        tm_vector,
+        [incident_order["ex"], incident_order["ey"], incident_order["ez"]],
+    )
+    if abs(tm_incident) <= NORMALIZATION_TOLERANCE:
+        raise ValueError("Incident TM reference amplitude is too small to normalize.")
+
     tm_pillar = np.dot(tm_vector, [pillar_order["ex"], pillar_order["ey"], pillar_order["ez"]])
-    te_reference = np.dot(te_vector, [reference_order["ex"], reference_order["ey"], reference_order["ez"]])
     te_pillar = np.dot(te_vector, [pillar_order["ex"], pillar_order["ey"], pillar_order["ez"]])
-    coefficients = {
-        "tm": tm_pillar / tm_reference,
-        "te": te_pillar / te_reference if abs(te_reference) > 1e-14 else 0j,
+    component_coefficients = {
+        component: pillar_order[component] / tm_incident
+        for component in ("ex", "ey", "ez")
     }
+    coefficients = {
+        "tm": tm_pillar / tm_incident,
+        "te": te_pillar / tm_incident,
+    }
+
+    if abs(incident_flux) <= NORMALIZATION_TOLERANCE:
+        raise ValueError("Incident flux is too small to normalize transmission.")
+    if abs(reference_flux) <= NORMALIZATION_TOLERANCE:
+        raise ValueError("Bare-reference flux is too small to form its diagnostic ratio.")
+
+    absolute_transmission = pillar_flux / incident_flux
+    reflectance = (
+        reflected_flux / incident_flux if reflected_flux is not None else None
+    )
 
     return {
         **{
@@ -172,7 +205,14 @@ def calculate_transmissions(
         "zero_order_power_estimate": float(
             sum(abs(coefficient) ** 2 for coefficient in coefficients.values())
         ),
-        "total_transmitted_power_ratio": float(pillar_flux / reference_flux),
+        "total_transmitted_power_ratio": float(absolute_transmission),
+        "bare_reference_transmission_ratio": float(pillar_flux / reference_flux),
+        "bare_reference_total_transmission": float(reference_flux / incident_flux),
+        "reflectance": None if reflectance is None else float(reflectance),
+        "power_balance_error": (
+            None if reflectance is None
+            else float(absolute_transmission + reflectance - 1.0)
+        ),
         "zero_order_tm_magnitude": float(abs(coefficients["tm"])),
         "zero_order_tm_phase_deg": float(
             np.degrees(np.angle(coefficients["tm"])) % 360
@@ -327,6 +367,7 @@ def write_ellipse_pillar_library(
         "metadata": {
             "wavelength_um": wavelength,
             "length_unit": "um",
+            "transmission_schema_version": LIBRARY_SCHEMA_VERSION,
             "field_definitions": ELLIPSE_LIBRARY_FIELD_DEFINITIONS,
         },
         "simulations": simulations,
@@ -353,8 +394,15 @@ def run_unit_cell(
     theta_deg: float = 0.0,
     plot_field_profile: bool = False,
     simulation_label: str = "",
+    include_substrate: bool = True,
+    incident_reflection_flux_data=None,
 ) -> dict[str, np.ndarray]:
-    """Return transmission-plane fields and, when requested, a y=0 field slice."""
+    """Return monitor fields and fluxes for a cell with a common full-cell basis.
+
+    Transverse mirror symmetries are deliberately disabled.  A reference that
+    uses a reduced symmetry domain cannot safely normalize a rotated pillar
+    that does not use that domain, especially for cross polarization.
+    """
     cell_z = substrate_h + pillar_h + 2 * air_padding + 2 * dpml
     cell = mp.Vector3(period, period, cell_z)
     monitor_z = 0.5 * cell_z - dpml - 0.35
@@ -365,29 +413,23 @@ def run_unit_cell(
     # so |k| = fcen and kx = fcen * sin(theta).
     k_point = mp.Vector3(fcen * np.sin(incident_angle_rad), 0, 0)
 
-    # With an unrotated ellipse, the x-z plane remains a symmetry plane for
-    # all x-z incidence. The y-z plane is additionally valid at normal
-    # incidence. For an Ex source, the source is even under y -> -y and odd
-    # under x -> -x.
-    symmetries = []
-    if theta_deg == 0:
-        symmetries.append(mp.Mirror(mp.Y, phase=+1))
-        if incident_angle_deg == 0:
-            symmetries.append(mp.Mirror(mp.X, phase=-1))
-
     def bloch_phase(position: mp.Vector3) -> complex:
         """Apply the x-dependent phase of the oblique Bloch plane wave."""
         return np.exp(2j * np.pi * k_point.x * position.x)
 
-    substrate = mp.Block(
-        size=mp.Vector3(period, period, substrate_h),
-        center=mp.Vector3(0, 0, -substrate_h / 2),
-        material=mp.Medium(index=n_sio2),
+    substrate = (
+        mp.Block(
+            size=mp.Vector3(period, period, substrate_h),
+            center=mp.Vector3(0, 0, -substrate_h / 2),
+            material=mp.Medium(index=n_sio2),
+        )
+        if include_substrate
+        else None
     )
     sim = mp.Simulation(
         cell_size=cell,
         boundary_layers=[mp.PML(dpml, direction=mp.Z)],
-        geometry=[substrate, *extra_geometry],
+        geometry=([substrate] if substrate is not None else []) + extra_geometry,
         sources=[
             mp.Source(
                 mp.GaussianSource(fcen, fwidth=0.05 * fcen),
@@ -398,7 +440,6 @@ def run_unit_cell(
             )
         ],
         k_point=k_point,
-        symmetries=symmetries,
         resolution=resolution,
         default_material=mp.air,
     )
@@ -417,6 +458,18 @@ def run_unit_cell(
             direction=mp.Z,
         ),
     )
+    reflection_flux = sim.add_flux(
+        fcen,
+        0,
+        1,
+        mp.FluxRegion(
+            center=mp.Vector3(0, 0, source_z + 0.2),
+            size=mp.Vector3(period, period, 0),
+            direction=mp.Z,
+        ),
+    )
+    if incident_reflection_flux_data is not None:
+        sim.load_minus_flux_data(reflection_flux, incident_reflection_flux_data)
     field_profile_dft = None
     if plot_field_profile:
         field_profile_dft = sim.add_dft_fields(
@@ -453,6 +506,12 @@ def run_unit_cell(
         'ez' : ez,
         'transmitted_flux': float(mp.get_fluxes(transmission_flux)[0]),
     }
+    if incident_reflection_flux_data is None:
+        fields["reflection_flux_data"] = sim.get_flux_data(reflection_flux)
+    else:
+        # After subtracting the incident wave, a downward reflected wave has
+        # negative z-directed flux.  Store power as a positive quantity.
+        fields["reflected_flux"] = float(-mp.get_fluxes(reflection_flux)[0])
     if field_profile_dft is not None:
         fields["y0_ex"] = np.squeeze(
             sim.get_dft_array(field_profile_dft, mp.Ex, 0)
@@ -471,6 +530,23 @@ def run_reference_unit_cell(
     )
 
 
+def run_incident_unit_cell(
+    pillar_h: float,
+    period: float,
+    incident_angle_deg: float,
+    simulation_label: str = "",
+) -> dict[str, np.ndarray]:
+    """Run the no-structure incident field used for absolute normalization."""
+    return run_unit_cell(
+        [],
+        pillar_h,
+        period,
+        incident_angle_deg,
+        simulation_label=simulation_label,
+        include_substrate=False,
+    )
+
+
  
 # %% Upload GDS to sim
 
@@ -480,6 +556,7 @@ def simulate_gds_unit_cell(
     period: float,
     incident_angle_deg: float,
     reference_field: dict[str, complex | float],
+    incident_field: dict[str, complex | float],
     plot_field_profile: bool = False,
     theta_deg: float = 0.0,
     simulation_label: str = "",
@@ -514,12 +591,16 @@ def simulate_gds_unit_cell(
         theta_deg,
         plot_field_profile=plot_field_profile,
         simulation_label=simulation_label,
+        incident_reflection_flux_data=incident_field["reflection_flux_data"],
     )
     transmission_and_phase = calculate_transmissions(
         reference_field,
         pillar_field,
+        incident_field,
         reference_field["transmitted_flux"],
         pillar_field["transmitted_flux"],
+        incident_field["transmitted_flux"],
+        pillar_field["reflected_flux"],
         incident_angle_deg,
         period=period,
     )
@@ -531,6 +612,7 @@ def simulate_gds_unit_cell(
             "incident_angle_deg": incident_angle_deg,
         },
         "reference_transmission_plane_fields": reference_field,
+        "incident_transmission_plane_fields": incident_field,
         "pillar_transmission_plane_fields": pillar_field,
         "normalized_response": transmission_and_phase,
     }
@@ -540,19 +622,39 @@ ELLIPSE_LIBRARY_COLUMNS = [
     "period_um", "incident_angle_deg", "gds_path", "ex_real", "ex_imag",
     "ey_real", "ey_imag", "ez_real", "ez_imag", "tm_real", "tm_imag",
     "te_real", "te_imag", "zero_order_power_estimate",
-    "total_transmitted_power_ratio", "reference_transmission_plane_flux",
+    "total_transmitted_power_ratio", "bare_reference_transmission_ratio",
+    "bare_reference_total_transmission", "reflectance", "power_balance_error",
+    "incident_transmission_plane_flux", "reference_transmission_plane_flux",
     "pillar_transmission_plane_flux", "zero_order_tm_magnitude",
-    "zero_order_tm_phase_deg", "completed_at",
+    "zero_order_tm_phase_deg", "transmission_schema_version", "completed_at",
 ]
 
 ELLIPSE_LIBRARY_FIELD_DEFINITIONS = {
     "zero_order_power_estimate": (
-        "abs(tm)^2 + abs(te)^2 from normalized zero-order field coefficients; "
-        "not an integrated flux measurement"
+        "abs(tm)^2 + abs(te)^2 from zero-order TE/TM coefficients normalized "
+        "to the incident TM mode; a modal estimate, not integrated flux"
     ),
     "total_transmitted_power_ratio": (
-        "pillar transmission-plane flux divided by bare-reference "
-        "transmission-plane flux"
+        "integrated transmitted z-directed power divided by incident power"
+    ),
+    "bare_reference_transmission_ratio": (
+        "pillar transmission-plane flux divided by bare-substrate transmitted "
+        "flux; may exceed one without violating energy conservation"
+    ),
+    "bare_reference_total_transmission": (
+        "bare-substrate transmitted flux divided by incident flux"
+    ),
+    "reflectance": (
+        "backward power at the input monitor divided by incident flux, after "
+        "incident-field subtraction"
+    ),
+    "power_balance_error": (
+        "total_transmitted_power_ratio + reflectance - 1 for these lossless "
+        "materials; use as a numerical-convergence diagnostic"
+    ),
+    "incident_transmission_plane_flux": (
+        "raw integrated z-directed Poynting flux from the no-structure "
+        "incident-field normalization run"
     ),
     "reference_transmission_plane_flux": (
         "raw integrated z-directed Poynting flux for the bare reference"
@@ -615,6 +717,7 @@ def ellipse_pillar_sweeps(
             record["incident_angle_deg"],
         )
         for record in simulations
+        if record.get("transmission_schema_version") == LIBRARY_SCHEMA_VERSION
     }
 
     # ``Elim_Redundincies`` returns parallel lists, so export one geometry at
@@ -630,6 +733,7 @@ def ellipse_pillar_sweeps(
         for geometry in geometries
     }
     reference_fields = {}
+    incident_fields = {}
     conditions = list(product(pillar_h_list, period_list, incident_angle_list))
     total_simulations = len(geometries) * len(conditions)
     sweep_started = time.perf_counter()
@@ -654,12 +758,17 @@ def ellipse_pillar_sweeps(
             reference_fields[reference_key] = run_reference_unit_cell(
                 pillar_h, period, incident_angle, simulation_label
             )
+        if reference_key not in incident_fields:
+            incident_fields[reference_key] = run_incident_unit_cell(
+                pillar_h, period, incident_angle, f"{simulation_label} incident"
+            )
         simulation = simulate_gds_unit_cell(
             gds_files[geometry],
             pillar_h,
             period,
             incident_angle,
             reference_fields[reference_key],
+            incident_fields[reference_key],
             plot_field_profile=True,
             theta_deg=geometry[2],
             simulation_label=simulation_label,
@@ -685,6 +794,17 @@ def ellipse_pillar_sweeps(
             "total_transmitted_power_ratio": response[
                 "total_transmitted_power_ratio"
             ],
+            "bare_reference_transmission_ratio": response[
+                "bare_reference_transmission_ratio"
+            ],
+            "bare_reference_total_transmission": response[
+                "bare_reference_total_transmission"
+            ],
+            "reflectance": response["reflectance"],
+            "power_balance_error": response["power_balance_error"],
+            "incident_transmission_plane_flux": incident_fields[reference_key][
+                "transmitted_flux"
+            ],
             "reference_transmission_plane_flux": reference_fields[reference_key][
                 "transmitted_flux"
             ],
@@ -693,6 +813,7 @@ def ellipse_pillar_sweeps(
             ]["transmitted_flux"],
             "zero_order_tm_magnitude": response["zero_order_tm_magnitude"],
             "zero_order_tm_phase_deg": response["zero_order_tm_phase_deg"],
+            "transmission_schema_version": LIBRARY_SCHEMA_VERSION,
             "completed_at": datetime.now().astimezone().isoformat(
                 timespec="seconds"
             ),
@@ -700,6 +821,36 @@ def ellipse_pillar_sweeps(
         for component in ("ex", "ey", "ez", "tm", "te"):
             record[f"{component}_real"] = response[component]["real"]
             record[f"{component}_imag"] = response[component]["imag"]
+        balance_error = response["power_balance_error"]
+        if balance_error is not None and abs(balance_error) > POWER_BALANCE_TOLERANCE:
+            print(
+                f"{simulation_label} warning: T+R-1={balance_error:+.3e}; "
+                "increase resolution, PML/air padding, or run time before using "
+                "this record for a passivity-sensitive result.",
+                flush=True,
+            )
+        if response["total_transmitted_power_ratio"] > 1 + POWER_BALANCE_TOLERANCE:
+            print(
+                f"{simulation_label} warning: absolute transmission is "
+                f"{response['total_transmitted_power_ratio']:.6f} (> 1); "
+                "this is a convergence diagnostic and was not clipped.",
+                flush=True,
+            )
+        # Replace an older-schema record for this geometry once it has been
+        # recomputed, so CSV consumers do not encounter two interpretations
+        # of the same transmission value.
+        simulations[:] = [
+            existing
+            for existing in simulations
+            if (
+                existing["radius_x_um"],
+                existing["radius_y_um"],
+                existing["rotation_deg"],
+                existing["pillar_height_um"],
+                existing["period_um"],
+                existing["incident_angle_deg"],
+            ) != key
+        ]
         simulations.append(record)
         completed.add(key)
         write_ellipse_pillar_library(json_path, csv_path, simulations)
@@ -714,67 +865,149 @@ def ellipse_pillar_sweeps(
     return simulations
 
 # %% Initial Notebook test
-ellipse_pillar_sweeps(r_x_list,r_y_list,theta_list,pillar_h_list,period_list,incident_angle_list,gds_lib_path,data_lib_path)
+ellipse_pillar_sweeps(r_x_list[0],r_y_list[0],theta_list[0],pillar_h_list[0],period_list[0],incident_angle_list[0],gds_lib_path,data_lib_path)
 # %% Post sim processing and phase coverage plot
 def plot_phase_coverage(
     csv_path: Path | None = None,
     first_data_row: int = 6,
-) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes]]:
-    """Plot saved zero-order phase and power against simulation index.
+    incident_angle_deg: float = 0.0,
+) -> tuple[plt.Figure, np.ndarray]:
+    """Plot phase/power coverage in a pillar-height by period grid.
 
-    The current library CSV has a header followed by four placeholder rows,
-    so the first valid simulation is physical CSV row 6.  ``first_data_row``
-    is a one-based CSV row number (including the header), rather than a
-    pandas-style zero-based index.
+    Each panel contains one fabrication/LPA condition: one pillar height and
+    one period.  Restricting the plot to one incident angle keeps geometry,
+    rather than angle, as the varying parameter within a panel.
+
+    ``first_data_row`` is a one-based CSV row number (including the header).
+    The returned axes are the primary (phase) axes in a two-dimensional
+    ``[height_index, period_index]`` array; each has a twin power axis.
     """
     if csv_path is None:
         csv_path = data_lib_path / "ellipse_pillar_library_data.csv"
 
-    phases = []
-    transmissions = []
+    records_by_condition: dict[tuple[float, float], list[dict[str, float]]] = {}
     with csv_path.open(newline="") as csv_file:
         reader = csv.DictReader(csv_file)
         for csv_row, record in enumerate(reader, start=2):
             if csv_row < first_data_row:
                 continue
+            if record.get("transmission_schema_version") != str(LIBRARY_SCHEMA_VERSION):
+                continue
             try:
                 phase = float(record["zero_order_tm_phase_deg"])
                 transmission = float(record["zero_order_power_estimate"])
+                pillar_height = float(record["pillar_height_um"])
+                period = float(record["period_um"])
+                record_angle = float(record["incident_angle_deg"])
+                radius_x = float(record["radius_x_um"])
+                radius_y = float(record["radius_y_um"])
+                rotation = float(record["rotation_deg"])
             except (KeyError, TypeError, ValueError):
                 continue
-            if np.isfinite(phase) and np.isfinite(transmission):
-                phases.append(phase % 360)
-                transmissions.append(transmission)
+            if not all(
+                np.isfinite(value)
+                for value in (
+                    phase,
+                    transmission,
+                    pillar_height,
+                    period,
+                    record_angle,
+                    radius_x,
+                    radius_y,
+                    rotation,
+                )
+            ):
+                continue
+            if not np.isclose(record_angle, incident_angle_deg):
+                continue
+            records_by_condition.setdefault((pillar_height, period), []).append(
+                {
+                    "phase": phase % 360,
+                    "transmission": transmission,
+                    "radius_x": radius_x,
+                    "radius_y": radius_y,
+                    "rotation": rotation,
+                }
+            )
 
-    if not phases:
-        raise ValueError(f"No valid simulation records found in {csv_path}.")
+    if not records_by_condition:
+        raise ValueError(
+            f"No schema-v{LIBRARY_SCHEMA_VERSION} records at "
+            f"{incident_angle_deg:g} deg found in {csv_path}."
+        )
 
-    simulation_indices = np.arange(1, len(phases) + 1)
-    fig, ax_phase = plt.subplots()
-    phase_points = ax_phase.scatter(
-        simulation_indices, phases, marker="o", color="tab:orange", label="Phase"
+    heights = sorted({height for height, _ in records_by_condition})
+    periods = sorted({period for _, period in records_by_condition})
+    fig, axes = plt.subplots(
+        len(heights),
+        len(periods),
+        figsize=(5.0 * len(periods), 3.8 * len(heights)),
+        squeeze=False,
+        sharex=False,
+        sharey=True,
     )
-    ax_phase.set_xlabel("Simulation index")
-    ax_phase.set_ylabel("Phase (degrees)", color="tab:orange")
-    ax_phase.tick_params(axis="y", labelcolor="tab:orange")
-    ax_phase.set_ylim(0, 360)
 
-    ax_transmission = ax_phase.twinx()
-    transmission_points = ax_transmission.scatter(
-        simulation_indices,
-        transmissions,
-        marker="x",
-        color="tab:blue",
-        label="Zero-order power estimate",
+    phase_points = None
+    transmission_points = None
+    for height_index, pillar_height in enumerate(heights):
+        for period_index, period in enumerate(periods):
+            ax_phase = axes[height_index, period_index]
+            condition_records = sorted(
+                records_by_condition.get((pillar_height, period), []),
+                key=lambda item: (
+                    item["radius_x"], item["radius_y"], item["rotation"]
+                ),
+            )
+            ax_phase.set_title(
+                f"h = {pillar_height:g} µm, p = {period:g} µm"
+            )
+            ax_phase.set_ylim(0, 360)
+            ax_phase.tick_params(axis="y", labelcolor="tab:orange")
+            if not condition_records:
+                ax_phase.text(
+                    0.5,
+                    0.5,
+                    "No data",
+                    transform=ax_phase.transAxes,
+                    ha="center",
+                    va="center",
+                )
+                continue
+
+            simulation_indices = np.arange(1, len(condition_records) + 1)
+            phases = [item["phase"] for item in condition_records]
+            transmissions = [item["transmission"] for item in condition_records]
+            phase_points = ax_phase.scatter(
+                simulation_indices, phases, marker="o", color="tab:orange"
+            )
+            ax_transmission = ax_phase.twinx()
+            transmission_points = ax_transmission.scatter(
+                simulation_indices, transmissions, marker="x", color="tab:blue"
+            )
+            ax_transmission.tick_params(axis="y", labelcolor="tab:blue")
+
+            if period_index == len(periods) - 1:
+                ax_transmission.set_ylabel("Zero-order power", color="tab:blue")
+            else:
+                ax_transmission.set_yticklabels([])
+            if height_index == len(heights) - 1:
+                ax_phase.set_xlabel("Geometry index")
+            if period_index == 0:
+                ax_phase.set_ylabel("Phase (degrees)", color="tab:orange")
+
+    if phase_points is not None and transmission_points is not None:
+        fig.legend(
+            [phase_points, transmission_points],
+            ["TM phase", "Zero-order power"],
+            loc="upper center",
+            ncol=2,
+        )
+    fig.suptitle(
+        f"Zero-order phase and power coverage at {incident_angle_deg:g}° incidence"
     )
-    ax_transmission.set_ylabel("Zero-order power estimate", color="tab:blue")
-    ax_transmission.tick_params(axis="y", labelcolor="tab:blue")
-
-    ax_transmission.set_title("Zero-order transmission and phase coverage")
-    ax_phase.legend(handles=[phase_points, transmission_points])
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
     plt.show()
-    return fig, (ax_phase, ax_transmission)
+    return fig, axes
 
 
 # %% Plot
