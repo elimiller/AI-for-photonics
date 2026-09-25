@@ -34,9 +34,8 @@ from Unit_cell_generation import*
 # %% Manual unit-cell parameters
 wavelength = 1.55             # design wavelength [um]
 period = 0.60                 # square-lattice pitch [um]
-pillar_h = 0.85               # a-Si cylinder height [um]
-radius_list = [0.102,0.140,0.157,0.168,0.180,0.193,0.214,0.242]                # selected Figure 2a library radius [um]
-example_radius = 0.180     # radius to display before launching a sweep [um]
+pillar_h_list = 0.85               # a-Si cylinder height [um]
+radius_list = [0.102,0.140,0.157,0.168,0.180,0.193,0.214,0.242]                # selected Figure 2a library radius [um]    # radius to display before launching a sweep [um]
 RUN_SIMULATION = True     # set True only when ready to run the FDTD sweep
 
 # The paper cites cryogenic Si optical data. These lossless indices are a

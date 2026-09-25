@@ -42,13 +42,13 @@ def sellfit(x):
 print(sellfit(-0.248)) # Normalized wavelength
 
 # %% Manual params
-r_x_list = np.linspace(0.030,0.110,4)
-r_y_list = np.linspace(0.030,0.110,4)
+r_x_list = np.linspace(0.035,0.110,4)
+r_y_list = np.linspace(0.035,0.110,4)
 theta_list = np.linspace(0,180,4)
 wavelength = 0.532             # design wavelength [um]
-period_list = [0.300,0.400]             # square-lattice pitch [um]
-pillar_h_list = [0.400,0.500,0.600]
-incident_angle_list = [0,5,10]# polar angle in degrees; tilt is in the x-z plane
+period_list = [0.300]            # square-lattice pitch [um]
+pillar_h_list = [0.700]
+incident_angle_list = [0]# polar angle in degrees; tilt is in the x-z plane
 RUN_SIMULATION = False
 n_SiN = sellfit(-0.248)
 n_sio2 = 1.46
@@ -56,7 +56,7 @@ resolution = 75               # pixels / um; increase after convergence test
 dpml = 0.8                    # z-only absorbing boundary thickness [um]
 air_padding = 1.0             # air above and below the structure [um]
 substrate_h = 1.0 
-
+              # a-Si cylinder height [um]
 # %% Gen GDS library
 # gds_files = generate_unit_cell_gds_lib(
 #     elliptical_pillar_gds,
@@ -392,17 +392,13 @@ def run_unit_cell(
     period: float,
     incident_angle_deg: float,
     theta_deg: float = 0.0,
+    use_symmetries: bool = False,
     plot_field_profile: bool = False,
     simulation_label: str = "",
     include_substrate: bool = True,
     incident_reflection_flux_data=None,
 ) -> dict[str, np.ndarray]:
-    """Return monitor fields and fluxes for a cell with a common full-cell basis.
-
-    Transverse mirror symmetries are deliberately disabled.  A reference that
-    uses a reduced symmetry domain cannot safely normalize a rotated pillar
-    that does not use that domain, especially for cross polarization.
-    """
+    """Return monitor fields and fluxes for one unit-cell simulation."""
     cell_z = substrate_h + pillar_h + 2 * air_padding + 2 * dpml
     cell = mp.Vector3(period, period, cell_z)
     monitor_z = 0.5 * cell_z - dpml - 0.35
@@ -412,6 +408,12 @@ def run_unit_cell(
     # Meep's k_point is in inverse-layout units.  The incident medium is air,
     # so |k| = fcen and kx = fcen * sin(theta).
     k_point = mp.Vector3(fcen * np.sin(incident_angle_rad), 0, 0)
+
+    symmetries = []
+    if use_symmetries and theta_deg == 0:
+        symmetries.append(mp.Mirror(mp.Y, phase=+1))
+        if incident_angle_deg == 0:
+            symmetries.append(mp.Mirror(mp.X, phase=-1))
 
     def bloch_phase(position: mp.Vector3) -> complex:
         """Apply the x-dependent phase of the oblique Bloch plane wave."""
@@ -440,6 +442,7 @@ def run_unit_cell(
             )
         ],
         k_point=k_point,
+        symmetries=symmetries,
         resolution=resolution,
         default_material=mp.air,
     )
@@ -526,10 +529,16 @@ def run_reference_unit_cell(
     period: float,
     incident_angle_deg: float,
     simulation_label: str = "",
+    use_symmetries: bool = False,
 ) -> dict[str, complex | float]:
     """Run the bare-substrate reference for one height/period/angle condition."""
     return run_unit_cell(
-        [], pillar_h, period, incident_angle_deg, simulation_label=simulation_label
+        [],
+        pillar_h,
+        period,
+        incident_angle_deg,
+        use_symmetries=use_symmetries,
+        simulation_label=simulation_label,
     )
 
 
@@ -538,6 +547,7 @@ def run_incident_unit_cell(
     period: float,
     incident_angle_deg: float,
     simulation_label: str = "",
+    use_symmetries: bool = False,
 ) -> dict[str, np.ndarray]:
     """Run the no-structure incident field used for absolute normalization."""
     return run_unit_cell(
@@ -545,6 +555,7 @@ def run_incident_unit_cell(
         pillar_h,
         period,
         incident_angle_deg,
+        use_symmetries=use_symmetries,
         simulation_label=simulation_label,
         include_substrate=False,
     )
@@ -592,6 +603,7 @@ def simulate_gds_unit_cell(
         period,
         incident_angle_deg,
         theta_deg,
+        use_symmetries=True,
         plot_field_profile=plot_field_profile,
         simulation_label=simulation_label,
         incident_reflection_flux_data=incident_field["reflection_flux_data"],
@@ -690,12 +702,21 @@ def ellipse_pillar_sweeps(
     incident_angle_list,
     gds_lib_path,
     data_lib_path,
+    circles_only: bool = False,
 ) -> list[dict[str, object]]:
-    """Run only new ellipse-pillar simulations from the supplied sweeps."""
+    """Run only new ellipse-pillar simulations from the supplied sweeps.
+
+    Set ``circles_only`` to keep only geometries with equal x/y radii while
+    retaining one sweep invocation and its shared reference-field cache.
+    """
     unique_r_x, unique_r_y, unique_theta = Elim_Redundincies(
         r_x_list, r_y_list, theta_list
     )
     geometries = list(zip(unique_r_x, unique_r_y, unique_theta, strict=True))
+    if circles_only:
+        geometries = [
+            geometry for geometry in geometries if np.isclose(geometry[0], geometry[1])
+        ]
     pillar_h_list = list(dict.fromkeys(map(float, pillar_h_list)))
     period_list = list(dict.fromkeys(map(float, period_list)))
     incident_angle_list = list(dict.fromkeys(map(float, incident_angle_list)))
@@ -756,14 +777,23 @@ def ellipse_pillar_sweeps(
             continue
 
         print(f"{simulation_label} running {key}", flush=True)
-        reference_key = (pillar_h, period, incident_angle)
+        use_symmetries = geometry[2] == 0
+        reference_key = (pillar_h, period, incident_angle, use_symmetries)
         if reference_key not in reference_fields:
             reference_fields[reference_key] = run_reference_unit_cell(
-                pillar_h, period, incident_angle, simulation_label
+                pillar_h,
+                period,
+                incident_angle,
+                simulation_label,
+                use_symmetries=use_symmetries,
             )
         if reference_key not in incident_fields:
             incident_fields[reference_key] = run_incident_unit_cell(
-                pillar_h, period, incident_angle, f"{simulation_label} incident"
+                pillar_h,
+                period,
+                incident_angle,
+                f"{simulation_label} incident",
+                use_symmetries=use_symmetries,
             )
         simulation = simulate_gds_unit_cell(
             gds_files[geometry],
@@ -868,11 +898,16 @@ def ellipse_pillar_sweeps(
     return simulations
 
 # %% Initial Notebook test/ sim run
-ellipse_pillar_sweeps([r_x_list[0]],[r_y_list[0]],[theta_list[0]],[pillar_h_list[1]],[period_list[0]],[incident_angle_list[0]],gds_lib_path,data_lib_path)
+ellipse_pillar_sweeps(
+    r_x_list, r_y_list,theta_list,
+    pillar_h_list, period_list, incident_angle_list,
+    gds_lib_path, data_lib_path,
+    circles_only=False,
+)
 # %% Post sim processing and phase coverage plot
 def plot_phase_coverage(
     csv_path: Path | None = None,
-    first_data_row: int = 6,
+    first_data_row: int = 2,
     incident_angle_deg: float = 0.0,
 ) -> tuple[plt.Figure, np.ndarray]:
     """Plot phase/power coverage in a pillar-height by period grid.
@@ -1015,5 +1050,107 @@ def plot_phase_coverage(
 
 # %% Plot
 plot_phase_coverage()
+
+# %% Validation plot
+def plot_circle_radius_coverage(
+    csv_path: Path | None = None,
+    incident_angle_deg: float = 0.0,
+    pillar_height_um: float | None = None,
+    period_um: float | None = None,
+) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes]]:
+    """Plot circular-pillar phase and transmission against pillar radius.
+
+    When the CSV has more than one height/period condition, select one with
+    ``pillar_height_um`` and ``period_um`` to avoid mixing distinct designs.
+    """
+    if csv_path is None:
+        csv_path = data_lib_path / "ellipse_pillar_library_data.csv"
+
+    records = []
+    with csv_path.open(newline="") as csv_file:
+        for record in csv.DictReader(csv_file):
+            if record.get("transmission_schema_version") != str(LIBRARY_SCHEMA_VERSION):
+                continue
+            try:
+                radius_x = float(record["radius_x_um"])
+                radius_y = float(record["radius_y_um"])
+                rotation = float(record["rotation_deg"])
+                height = float(record["pillar_height_um"])
+                period = float(record["period_um"])
+                angle = float(record["incident_angle_deg"])
+                phase = float(record["zero_order_tm_phase_deg"]) % 360
+                transmission = float(record["total_transmitted_power_ratio"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (
+                np.isclose(radius_x, radius_y)
+                and np.isclose(rotation % 180, 0)
+                and np.isclose(angle, incident_angle_deg)
+            ):
+                continue
+            records.append(
+                {
+                    "radius": radius_x,
+                    "height": height,
+                    "period": period,
+                    "phase": phase,
+                    "transmission": transmission,
+                }
+            )
+
+    conditions = sorted({(item["height"], item["period"]) for item in records})
+    if pillar_height_um is None and period_um is None:
+        if len(conditions) != 1:
+            raise ValueError(
+                "Multiple height/period conditions found; specify "
+                "pillar_height_um and period_um."
+            )
+        pillar_height_um, period_um = conditions[0]
+    if pillar_height_um is None or period_um is None:
+        raise ValueError("Specify both pillar_height_um and period_um.")
+
+    records = sorted(
+        (
+            item
+            for item in records
+            if np.isclose(item["height"], pillar_height_um)
+            and np.isclose(item["period"], period_um)
+        ),
+        key=lambda item: item["radius"],
+    )
+    if not records:
+        raise ValueError("No circular-pillar records match the selected condition.")
+
+    radii = [item["radius"] for item in records]
+    phases = [(item["phase"] + 70) % 360  for item in records]
+    transmissions = [item["transmission"] for item in records]
+    fig, ax_phase = plt.subplots(figsize=(7, 4.5))
+    phase_points = ax_phase.scatter(
+        radii, phases, marker="o", color="tab:orange", label="TM phase"
+    )
+    ax_phase.set(
+        xlabel="Pillar radius (µm)",
+        ylabel="Phase (degrees)",
+        ylim=(0, 360),
+        title=(
+            f"Circular pillars: h = {pillar_height_um:g} µm, "
+            f"p = {period_um:g} µm, θinc = {incident_angle_deg:g}°"
+        ),
+    )
+    ax_phase.tick_params(axis="y", labelcolor="tab:orange")
+
+    ax_transmission = ax_phase.twinx()
+    transmission_points = ax_transmission.scatter(
+        radii, transmissions, marker="x", color="tab:blue", label="Transmission"
+    )
+    ax_transmission.set_ylabel("Total transmitted power", color="tab:blue")
+    ax_transmission.tick_params(axis="y", labelcolor="tab:blue")
+    ax_phase.legend([phase_points, transmission_points], ["TM phase", "Transmission"])
+    fig.tight_layout()
+    plt.show()
+    return fig, (ax_phase, ax_transmission)
+
+
+plot_circle_radius_coverage()
 
 # %%
