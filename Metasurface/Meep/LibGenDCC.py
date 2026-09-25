@@ -516,6 +516,9 @@ def run_unit_cell(
         fields["y0_ex"] = np.squeeze(
             sim.get_dft_array(field_profile_dft, mp.Ex, 0)
         )
+    # All arrays and flux data needed by later simulations have been copied
+    # into ``fields``.  Release Meep's native grid before the next sweep case.
+    sim.reset_meep()
     return fields
 
 def run_reference_unit_cell(
