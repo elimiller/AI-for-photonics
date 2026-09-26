@@ -17,6 +17,8 @@ import sys
 import re
 from pathlib import Path
 from datetime import datetime
+from fractions import Fraction
+from math import ceil, lcm
 import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -53,8 +55,8 @@ incident_angle_list = [0]# polar angle in degrees; tilt is in the x-z plane
 RUN_SIMULATION = False
 n_SiN = sellfit(-0.248)
 n_sio2 = 1.46
-resolution = 100               # pixels / um; increase after convergence test
-courant = 0.25                # conservative FDTD timestep for small SiN features
+resolution = 75               # minimum pixels / um; aligned per simulation cell
+courant = 0.5                # conservative FDTD timestep for small SiN features
 dpml = 0.8                    # z-only absorbing boundary thickness [um]
 air_padding = 1.0             # air above and below the structure [um]
 substrate_h = 1.0 
@@ -71,7 +73,7 @@ substrate_h = 1.0
 
 # %% Create sim
 PILLAR_LAYER = (1, 0)
-POLARIZATION = mp.Ey # TM or P polarized
+POLARIZATION = mp.Ex # TM or P polarized
 fcen = 1 / wavelength
 MEEP_PROGRESS_INTERVAL = 5.0
 NORMALIZATION_TOLERANCE = 1e-12
@@ -80,6 +82,34 @@ LIBRARY_SCHEMA_VERSION = 2
 DECAY_LOG_CONTEXT = {}
 
 # %% Logging, calculation, cost reductions, and other functions to be used
+def grid_aligned_resolution(cell: mp.Vector3, center_xy_mirrors: bool) -> int:
+    """Return the smallest resolution at least ``resolution`` aligned to ``cell``.
+
+    The full cell must have an integral number of pixels to prevent Meep from
+    rounding it. When x/y mirrors are used, each half-width must also be an
+    integral number of pixels so the mirror planes remain centered on the
+    Yee grid.
+    """
+    dimensions = [cell.x, cell.y, cell.z]
+    if center_xy_mirrors:
+        dimensions.extend((cell.x / 2, cell.y / 2))
+
+    alignment_step = 1
+    for dimension in dimensions:
+        rational_dimension = Fraction(float(dimension)).limit_denominator(1_000_000)
+        if not np.isclose(
+            float(rational_dimension), dimension, rtol=0.0, atol=1e-12
+        ):
+            raise ValueError(
+                f"Cannot select an integer-pixel resolution for cell dimension "
+                f"{dimension!r}."
+            )
+        alignment_step = lcm(alignment_step, rational_dimension.denominator)
+
+    minimum_resolution = ceil(resolution)
+    return alignment_step * ceil(minimum_resolution / alignment_step)
+
+
 def log_decay_progress(running_sim: mp.Simulation) -> None:
     """Print field decay for the currently running sweep case."""
     field_magnitude = float(
@@ -403,6 +433,10 @@ def run_unit_cell(
     """Return monitor fields and fluxes for one unit-cell simulation."""
     cell_z = substrate_h + pillar_h + 2 * air_padding + 2 * dpml
     cell = mp.Vector3(period, period, cell_z)
+    apply_mirror_symmetries = use_symmetries and theta_deg == 0
+    simulation_resolution = grid_aligned_resolution(
+        cell, center_xy_mirrors=apply_mirror_symmetries
+    )
     monitor_z = 0.5 * cell_z - dpml - 0.35
     source_z = -0.5 * cell_z + dpml + 0.35
     incident_angle_rad = np.deg2rad(incident_angle_deg)
@@ -412,10 +446,10 @@ def run_unit_cell(
     k_point = mp.Vector3(fcen * np.sin(incident_angle_rad), 0, 0)
 
     symmetries = []
-    # if use_symmetries and theta_deg == 0:
-    #     symmetries.append(mp.Mirror(mp.Y, phase=-1))
-    #     if incident_angle_deg == 0:
-    #         symmetries.append(mp.Mirror(mp.X, phase=1))
+    if apply_mirror_symmetries:
+        symmetries.append(mp.Mirror(mp.Y, phase=1))
+        if incident_angle_deg == 0:
+            symmetries.append(mp.Mirror(mp.X, phase=-1))
 
     def bloch_phase(position: mp.Vector3) -> complex:
         """Apply the x-dependent phase of the oblique Bloch plane wave."""
@@ -444,8 +478,8 @@ def run_unit_cell(
             )
         ],
         k_point=k_point,
-        # symmetries=symmetries,
-        resolution=resolution,
+        symmetries=symmetries,
+        resolution=simulation_resolution,
         Courant=courant,
         default_material=mp.air,
     )
@@ -706,11 +740,16 @@ def ellipse_pillar_sweeps(
     gds_lib_path,
     data_lib_path,
     circles_only: bool = False,
+    save_data: bool = True,
 ) -> list[dict[str, object]]:
     """Run only new ellipse-pillar simulations from the supplied sweeps.
 
     Set ``circles_only`` to keep only geometries with equal x/y radii while
     retaining one sweep invocation and its shared reference-field cache.
+
+    Set ``save_data`` to ``False`` to run the sweep without reading or
+    writing the JSON/CSV library or saving field-profile plots. This also
+    bypasses completed-record checks, so every requested simulation is run.
     """
     unique_r_x, unique_r_y, unique_theta = Elim_Redundincies(
         r_x_list, r_y_list, theta_list
@@ -727,10 +766,9 @@ def ellipse_pillar_sweeps(
     json_path = data_lib_path / "ellipse_pillar_library_data.json"
     csv_path = data_lib_path / "ellipse_pillar_library_data.csv"
     plot_directory = data_lib_path / "Simulation Plots"
-    plot_directory.mkdir(exist_ok=True)
     simulations = (
         json.loads(json_path.read_text())["simulations"]
-        if json_path.exists()
+        if save_data and json_path.exists()
         else []
     )
     for record in simulations:
@@ -810,14 +848,15 @@ def ellipse_pillar_sweeps(
             simulation_label=simulation_label,
         )
         response = simulation["normalized_response"]
-        save_ellipse_pillar_plot(
-            simulation["pillar_transmission_plane_fields"],
-            geometry,
-            pillar_h,
-            period,
-            incident_angle,
-            plot_directory,
-        )
+        if save_data:
+            save_ellipse_pillar_plot(
+                simulation["pillar_transmission_plane_fields"],
+                geometry,
+                pillar_h,
+                period,
+                incident_angle,
+                plot_directory,
+            )
         record = {
             "radius_x_um": geometry[0],
             "radius_y_um": geometry[1],
@@ -889,7 +928,8 @@ def ellipse_pillar_sweeps(
         ]
         simulations.append(record)
         completed.add(key)
-        write_ellipse_pillar_library(json_path, csv_path, simulations)
+        if save_data:
+            write_ellipse_pillar_library(json_path, csv_path, simulations)
         elapsed = time.perf_counter() - sweep_started
         print(
             f"[{index}/{total_simulations}] [{record['completed_at']}] completed; "
@@ -897,7 +937,8 @@ def ellipse_pillar_sweeps(
             flush=True,
         )
 
-    write_ellipse_pillar_library(json_path, csv_path, simulations)
+    if save_data:
+        write_ellipse_pillar_library(json_path, csv_path, simulations)
     return simulations
 
 
@@ -960,8 +1001,8 @@ def constrained_radius_sweeps(
 # use a 60 nm minor radius (9 grid pixels at resolution 75).  If this is
 # stable, repeat with r_y_list=[0.030] while leaving every other input fixed.
 ellipse_pillar_sweeps(
-    r_x_list=[0.05666666666666666],
-    r_y_list=[0.030],
+    r_x_list=[0.10999999999999999],
+    r_y_list=[0.03],
     theta_list=[0],
     pillar_h_list=[0.550],
     period_list=[0.300],
@@ -969,7 +1010,9 @@ ellipse_pillar_sweeps(
     gds_lib_path=gds_lib_path,
     data_lib_path=data_lib_path,
     circles_only=False,
+    save_data= False
 )
+
 
 # %% Initial Notebook test/ sim run
 constrained_radius_sweeps(
