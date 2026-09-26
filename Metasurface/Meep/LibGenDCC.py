@@ -32,6 +32,7 @@ save_path = path / "Unit_cell_Libraries" /  'Ellipse Pillar SiN on SiO2 532 nm K
 print(save_path)
 gds_lib_path = save_path / 'GDS Library'
 data_lib_path = save_path / 'Library Data'
+
 # %% Sellmeeir curve fit
 def sellfit(x):
     a = -0.0468
@@ -76,7 +77,7 @@ PILLAR_LAYER = (1, 0)
 POLARIZATION = mp.Ex # TM or P polarized
 fcen = 1 / wavelength
 MEEP_PROGRESS_INTERVAL = 5.0
-MAX_SYMMETRY_TIME_AFTER_SOURCES = 200.0
+MAX_SYMMETRY_TIME = 165
 NORMALIZATION_TOLERANCE = 1e-12
 POWER_BALANCE_TOLERANCE = 2e-2
 LIBRARY_SCHEMA_VERSION = 2
@@ -111,6 +112,11 @@ def grid_aligned_resolution(cell: mp.Vector3, center_xy_mirrors: bool) -> int:
     return alignment_step * ceil(minimum_resolution / alignment_step)
 
 
+def supports_xy_mirror_symmetry(theta_deg: float) -> bool:
+    """Return whether an ellipse rotation is aligned with the x/y mirrors."""
+    return bool(np.isclose(float(theta_deg) % 90.0, 0.0, atol=1e-12))
+
+
 class FieldDecayStop:
     """Callable Meep stopping condition that records whether decay was reached."""
 
@@ -125,29 +131,47 @@ class FieldDecayStop:
         return self.reached
 
 
+class SymmetryRetryRequired(RuntimeError):
+    """A symmetry-reduced run reached its safety time limit.
+
+    Flux data and DFT arrays belong to a particular Meep grid decomposition.
+    A full-cell retry therefore has to recreate the incident, reference, and
+    pillar simulations together rather than retrying only the failed one.
+    """
+
+
 class FieldDecayOrTimeLimit(FieldDecayStop):
-    """Stop on field decay or a maximum time after the source finishes."""
+    """Stop after field decay, or at a maximum absolute Meep time.
+
+    This is passed through ``Simulation.run(until=...)`` rather than
+    ``until_after_sources`` so the time limit can terminate a simulation even
+    if Meep still regards the Gaussian source tail as active.
+    """
 
     def __init__(
         self,
         component: int,
         point: mp.Vector3,
         decay_by: float,
-        maximum_time_after_sources: float,
+        maximum_time: float,
     ) -> None:
         super().__init__(component, point, decay_by)
-        self.maximum_time_after_sources = maximum_time_after_sources
+        self.maximum_time = maximum_time
         self.timed_out = False
 
     def __call__(self, running_sim: mp.Simulation) -> bool:
-        if super().__call__(running_sim):
+        # Sample on every invocation, including while the source is on.  This
+        # preserves Meep's normal ``until_after_sources=stop_when_fields_decayed``
+        # behavior: the squared field is compared with its maximum over the
+        # entire run, but may only end the run after the source is off.
+        fields_decayed = super().__call__(running_sim)
+        if running_sim.round_time() >= self.maximum_time:
+            self.timed_out = True
             return True
-        source_end_time = running_sim.fields.last_source_time()
-        self.timed_out = (
-            running_sim.round_time()
-            >= source_end_time + self.maximum_time_after_sources
+        return (
+            fields_decayed
+            and running_sim.round_time() >= running_sim.fields.last_source_time()
         )
-        return self.timed_out
 
 
 def log_decay_progress(running_sim: mp.Simulation) -> None:
@@ -164,6 +188,7 @@ def log_decay_progress(running_sim: mp.Simulation) -> None:
         print(
             f"{DECAY_LOG_CONTEXT['label']} decay t={running_sim.meep_time():.2f}, "
             f"wall={time.perf_counter() - DECAY_LOG_CONTEXT['started']:.1f}s, "
+            f"field={field_magnitude:.3e}, peak={peak_field:.3e}, "
             f"field/peak={field_ratio:.3e}, squared={field_ratio**2:.3e}",
             flush=True,
         )
@@ -473,7 +498,9 @@ def run_unit_cell(
     """Return monitor fields and fluxes for one unit-cell simulation."""
     cell_z = substrate_h + pillar_h + 2 * air_padding + 2 * dpml
     cell = mp.Vector3(period, period, cell_z)
-    apply_mirror_symmetries = use_symmetries and theta_deg == 0
+    apply_mirror_symmetries = (
+        use_symmetries and supports_xy_mirror_symmetry(theta_deg)
+    )
     simulation_resolution = grid_aligned_resolution(
         cell, center_xy_mirrors=apply_mirror_symmetries
     )
@@ -580,35 +607,30 @@ def run_unit_cell(
             POLARIZATION,
             mp.Vector3(0, 0, monitor_z),
             1e-3,
-            MAX_SYMMETRY_TIME_AFTER_SOURCES,
+            MAX_SYMMETRY_TIME,
         )
     else:
         field_decay_stop = FieldDecayStop(
             POLARIZATION, mp.Vector3(0, 0, monitor_z), 1e-3
         )
-    sim.run(*run_arguments, until_after_sources=field_decay_stop)
+    if symmetries:
+        # An absolute ``until`` condition is required here.  Meep's
+        # ``until_after_sources`` wrapper otherwise prevents the 200-unit cap
+        # from stopping the run until after its source-tail end time.
+        sim.run(*run_arguments, until=field_decay_stop)
+    else:
+        sim.run(*run_arguments, until_after_sources=field_decay_stop)
 
     if symmetries and field_decay_stop.timed_out:
         if mp.am_master():
             print(
                 f"{simulation_label} exceeded "
-                f"{MAX_SYMMETRY_TIME_AFTER_SOURCES:g} time units after "
-                "sources with mirror symmetries; restarting without them.",
+                f"t={MAX_SYMMETRY_TIME:g} with mirror symmetries; restarting "
+                "this condition without them.",
                 flush=True,
             )
         sim.reset_meep()
-        return run_unit_cell(
-            extra_geometry,
-            pillar_h,
-            period,
-            incident_angle_deg,
-            theta_deg=theta_deg,
-            use_symmetries=False,
-            plot_field_profile=plot_field_profile,
-            simulation_label=f"{simulation_label} no-symmetry retry",
-            include_substrate=include_substrate,
-            incident_reflection_flux_data=incident_reflection_flux_data,
-        )
+        raise SymmetryRetryRequired(simulation_label)
     ex = sim.get_dft_array(dft, mp.Ex, 0)
     ey = sim.get_dft_array(dft, mp.Ey, 0)
     ez = sim.get_dft_array(dft, mp.Ez, 0)
@@ -683,6 +705,7 @@ def simulate_gds_unit_cell(
     plot_field_profile: bool = False,
     theta_deg: float = 0.0,
     simulation_label: str = "",
+    use_symmetries: bool = False,
 ) -> dict[str, object]:
     """Simulate one pillar GDS using an already-computed bare reference."""
     # The generator has already created a cell with this GDS top-cell name.
@@ -712,7 +735,7 @@ def simulate_gds_unit_cell(
         period,
         incident_angle_deg,
         theta_deg,
-        use_symmetries=True,
+        use_symmetries=use_symmetries,
         plot_field_profile=plot_field_profile,
         simulation_label=simulation_label,
         incident_reflection_flux_data=incident_field["reflection_flux_data"],
@@ -889,36 +912,80 @@ def ellipse_pillar_sweeps(
             )
             continue
 
-        print(f"{simulation_label} running {key}", flush=True)
-        use_symmetries = geometry[2] == 0
-        reference_key = (pillar_h, period, incident_angle, use_symmetries)
-        if reference_key not in reference_fields:
-            reference_fields[reference_key] = run_reference_unit_cell(
-                pillar_h,
-                period,
-                incident_angle,
-                simulation_label,
-                use_symmetries=use_symmetries,
-            )
-        if reference_key not in incident_fields:
-            incident_fields[reference_key] = run_incident_unit_cell(
-                pillar_h,
-                period,
-                incident_angle,
-                f"{simulation_label} incident",
-                use_symmetries=use_symmetries,
-            )
-        simulation = simulate_gds_unit_cell(
-            gds_files[geometry],
-            pillar_h,
-            period,
-            incident_angle,
-            reference_fields[reference_key],
-            incident_fields[reference_key],
-            plot_field_profile=True,
-            theta_deg=geometry[2],
-            simulation_label=simulation_label,
+        use_symmetries = supports_xy_mirror_symmetry(geometry[2])
+        symmetry_mode = (
+            "mirrors enabled"
+            if use_symmetries
+            else "no mirrors (rotated geometry)"
         )
+        print(f"{simulation_label} running {key}; {symmetry_mode}", flush=True)
+        reference_key = (pillar_h, period, incident_angle, use_symmetries)
+        try:
+            if reference_key not in reference_fields:
+                reference_fields[reference_key] = run_reference_unit_cell(
+                    pillar_h,
+                    period,
+                    incident_angle,
+                    simulation_label,
+                    use_symmetries=use_symmetries,
+                )
+            if reference_key not in incident_fields:
+                incident_fields[reference_key] = run_incident_unit_cell(
+                    pillar_h,
+                    period,
+                    incident_angle,
+                    f"{simulation_label} incident",
+                    use_symmetries=use_symmetries,
+                )
+            reference_field = reference_fields[reference_key]
+            incident_field = incident_fields[reference_key]
+            simulation = simulate_gds_unit_cell(
+                gds_files[geometry],
+                pillar_h,
+                period,
+                incident_angle,
+                reference_field,
+                incident_field,
+                plot_field_profile=True,
+                theta_deg=geometry[2],
+                simulation_label=simulation_label,
+                use_symmetries=use_symmetries,
+            )
+        except SymmetryRetryRequired:
+            # A no-symmetry pillar run cannot load flux data or compare DFT
+            # fields produced by a symmetry-reduced reference grid.  Rebuild
+            # all three simulations on the same full grid instead.
+            no_symmetry_key = (pillar_h, period, incident_angle, False)
+            if no_symmetry_key not in reference_fields:
+                reference_fields[no_symmetry_key] = run_reference_unit_cell(
+                    pillar_h,
+                    period,
+                    incident_angle,
+                    f"{simulation_label} no-symmetry reference",
+                    use_symmetries=False,
+                )
+            if no_symmetry_key not in incident_fields:
+                incident_fields[no_symmetry_key] = run_incident_unit_cell(
+                    pillar_h,
+                    period,
+                    incident_angle,
+                    f"{simulation_label} no-symmetry incident",
+                    use_symmetries=False,
+                )
+            reference_field = reference_fields[no_symmetry_key]
+            incident_field = incident_fields[no_symmetry_key]
+            simulation = simulate_gds_unit_cell(
+                gds_files[geometry],
+                pillar_h,
+                period,
+                incident_angle,
+                reference_field,
+                incident_field,
+                plot_field_profile=True,
+                theta_deg=geometry[2],
+                simulation_label=f"{simulation_label} no-symmetry retry",
+                use_symmetries=False,
+            )
         response = simulation["normalized_response"]
         if save_data:
             save_ellipse_pillar_plot(
@@ -949,12 +1016,8 @@ def ellipse_pillar_sweeps(
             ],
             "reflectance": response["reflectance"],
             "power_balance_error": response["power_balance_error"],
-            "incident_transmission_plane_flux": incident_fields[reference_key][
-                "transmitted_flux"
-            ],
-            "reference_transmission_plane_flux": reference_fields[reference_key][
-                "transmitted_flux"
-            ],
+            "incident_transmission_plane_flux": incident_field["transmitted_flux"],
+            "reference_transmission_plane_flux": reference_field["transmitted_flux"],
             "pillar_transmission_plane_flux": simulation[
                 "pillar_transmission_plane_fields"
             ]["transmitted_flux"],
