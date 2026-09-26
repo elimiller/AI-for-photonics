@@ -47,8 +47,8 @@ print(sellfit(-0.248)) # Normalized wavelength
 
 theta_list =  [0] 
 wavelength = 0.532             # design wavelength [um]
-period_list = [0.300,0.350,0.400]            # square-lattice pitch [um]
-pillar_h_list = [0.550,0.650,0.700]
+period_list = [0.200,0.250,0.300,0.350]            # square-lattice pitch [um]
+pillar_h_list = [0.550,0.600,0.650,0.750,0.800]
 r_x_list = np.linspace(0.035,0.110,4)
 r_y_list = np.linspace(0.035,0.110,4)
 incident_angle_list = [0]# polar angle in degrees; tilt is in the x-z plane
@@ -57,8 +57,8 @@ n_SiN = sellfit(-0.248)
 n_sio2 = 1.46
 resolution = 75               # minimum pixels / um; aligned per simulation cell
 courant = 0.5                # conservative FDTD timestep for small SiN features
-dpml = 0.8                    # z-only absorbing boundary thickness [um]
-air_padding = 1.0             # air above and below the structure [um]
+dpml = 1.2                    # z-only absorbing boundary thickness [um]
+air_padding = 1.2             # air above and below the structure [um]
 substrate_h = 1.0 
               # a-Si cylinder height [um]
 # %% Gen GDS library
@@ -76,6 +76,7 @@ PILLAR_LAYER = (1, 0)
 POLARIZATION = mp.Ex # TM or P polarized
 fcen = 1 / wavelength
 MEEP_PROGRESS_INTERVAL = 5.0
+MAX_SYMMETRY_TIME_AFTER_SOURCES = 200.0
 NORMALIZATION_TOLERANCE = 1e-12
 POWER_BALANCE_TOLERANCE = 2e-2
 LIBRARY_SCHEMA_VERSION = 2
@@ -108,6 +109,45 @@ def grid_aligned_resolution(cell: mp.Vector3, center_xy_mirrors: bool) -> int:
 
     minimum_resolution = ceil(resolution)
     return alignment_step * ceil(minimum_resolution / alignment_step)
+
+
+class FieldDecayStop:
+    """Callable Meep stopping condition that records whether decay was reached."""
+
+    def __init__(self, component: int, point: mp.Vector3, decay_by: float) -> None:
+        self._condition = mp.stop_when_fields_decayed(
+            50, component, point, decay_by
+        )
+        self.reached = False
+
+    def __call__(self, running_sim: mp.Simulation) -> bool:
+        self.reached = bool(self._condition(running_sim))
+        return self.reached
+
+
+class FieldDecayOrTimeLimit(FieldDecayStop):
+    """Stop on field decay or a maximum time after the source finishes."""
+
+    def __init__(
+        self,
+        component: int,
+        point: mp.Vector3,
+        decay_by: float,
+        maximum_time_after_sources: float,
+    ) -> None:
+        super().__init__(component, point, decay_by)
+        self.maximum_time_after_sources = maximum_time_after_sources
+        self.timed_out = False
+
+    def __call__(self, running_sim: mp.Simulation) -> bool:
+        if super().__call__(running_sim):
+            return True
+        source_end_time = running_sim.fields.last_source_time()
+        self.timed_out = (
+            running_sim.round_time()
+            >= source_end_time + self.maximum_time_after_sources
+        )
+        return self.timed_out
 
 
 def log_decay_progress(running_sim: mp.Simulation) -> None:
@@ -437,8 +477,8 @@ def run_unit_cell(
     simulation_resolution = grid_aligned_resolution(
         cell, center_xy_mirrors=apply_mirror_symmetries
     )
-    monitor_z = 0.5 * cell_z - dpml - 0.35
-    source_z = -0.5 * cell_z + dpml + 0.35
+    monitor_z = 0.5 * cell_z - dpml - air_padding/2
+    source_z = -0.5 * cell_z + dpml + air_padding/2
     incident_angle_rad = np.deg2rad(incident_angle_deg)
 
     # Meep's k_point is in inverse-layout units.  The incident medium is air,
@@ -531,12 +571,44 @@ def run_unit_cell(
             "started": time.perf_counter(),
         }
     )
-    sim.run(
-        mp.at_every(MEEP_PROGRESS_INTERVAL, log_decay_progress),
-        until_after_sources=mp.stop_when_fields_decayed(
-            50, POLARIZATION, mp.Vector3(0, 0, monitor_z), 1e-3
+    run_arguments = [mp.at_every(MEEP_PROGRESS_INTERVAL, log_decay_progress)]
+    if symmetries:
+        # Multiple mirror planes with Bloch-periodic boundaries can trigger a
+        # Meep instability. Abort only this symmetry-reduced attempt, then
+        # restart the same case on the full x-y cell below.
+        field_decay_stop = FieldDecayOrTimeLimit(
+            POLARIZATION,
+            mp.Vector3(0, 0, monitor_z),
+            1e-3,
+            MAX_SYMMETRY_TIME_AFTER_SOURCES,
         )
-    )
+    else:
+        field_decay_stop = FieldDecayStop(
+            POLARIZATION, mp.Vector3(0, 0, monitor_z), 1e-3
+        )
+    sim.run(*run_arguments, until_after_sources=field_decay_stop)
+
+    if symmetries and field_decay_stop.timed_out:
+        if mp.am_master():
+            print(
+                f"{simulation_label} exceeded "
+                f"{MAX_SYMMETRY_TIME_AFTER_SOURCES:g} time units after "
+                "sources with mirror symmetries; restarting without them.",
+                flush=True,
+            )
+        sim.reset_meep()
+        return run_unit_cell(
+            extra_geometry,
+            pillar_h,
+            period,
+            incident_angle_deg,
+            theta_deg=theta_deg,
+            use_symmetries=False,
+            plot_field_profile=plot_field_profile,
+            simulation_label=f"{simulation_label} no-symmetry retry",
+            include_substrate=include_substrate,
+            incident_reflection_flux_data=incident_reflection_flux_data,
+        )
     ex = sim.get_dft_array(dft, mp.Ex, 0)
     ey = sim.get_dft_array(dft, mp.Ey, 0)
     ez = sim.get_dft_array(dft, mp.Ez, 0)
@@ -1000,21 +1072,21 @@ def constrained_radius_sweeps(
 # Control: keep the normal-incidence, unrotated quarter-cell symmetries, but
 # use a 60 nm minor radius (9 grid pixels at resolution 75).  If this is
 # stable, repeat with r_y_list=[0.030] while leaving every other input fixed.
-ellipse_pillar_sweeps(
-    r_x_list=[0.10999999999999999],
-    r_y_list=[0.03],
-    theta_list=[0],
-    pillar_h_list=[0.550],
-    period_list=[0.300],
-    incident_angle_list=[0],
-    gds_lib_path=gds_lib_path,
-    data_lib_path=data_lib_path,
-    circles_only=False,
-    save_data= False
-)
+# ellipse_pillar_sweeps(
+#     r_x_list=[0.10999999999999999],
+#     r_y_list=[0.03],
+#     theta_list=[0],
+#     pillar_h_list=[0.550],
+#     period_list=[0.300],
+#     incident_angle_list=[0],
+#     gds_lib_path=gds_lib_path,
+#     data_lib_path=data_lib_path,
+#     circles_only=False,
+#     save_data= False
+# )
 
 
-# %% Initial Notebook test/ sim run
+# %% Initial Notebook test/ sim run|
 constrained_radius_sweeps(
     pillar_h_list,
     period_list,
