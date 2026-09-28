@@ -515,8 +515,8 @@ def run_unit_cell(
     symmetries = []
     if apply_mirror_symmetries:
         symmetries.append(mp.Mirror(mp.Y, phase=1))
-        if incident_angle_deg == 0:
-            symmetries.append(mp.Mirror(mp.X, phase=-1))
+        # if incident_angle_deg == 0:
+        #     symmetries.append(mp.Mirror(mp.X, phase=-1))
 
     def bloch_phase(position: mp.Vector3) -> complex:
         """Apply the x-dependent phase of the oblique Bloch plane wave."""
