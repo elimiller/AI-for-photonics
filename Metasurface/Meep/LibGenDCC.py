@@ -1409,4 +1409,250 @@ def plot_circle_radius_coverage(
 
 plot_circle_radius_coverage()
 
+# %% Plot heat map as requested
+def plot_phase_heatmap(
+    csv_path: Path | None = None,
+    first_data_row: int = 2,
+    period: float = 0.35,
+    pillar_height: float = 0.8,
+) -> tuple[plt.Figure, plt.Axes]:
+    """Plot zero-order TM phase over the ``r_x``/``r_y`` geometry sweep.
+
+    Only normal-incidence records are used.  The library canonicalizes an
+    ellipse with ``r_x < r_y`` as ``(r_y, r_x, 90 degrees)``; those 90-degree
+    records are converted back to their equivalent unrotated global-axis
+    ``(r_x, r_y)`` coordinates before plotting.  ``period`` and
+    ``pillar_height`` select the fabrication condition to display.
+    ``first_data_row`` is a one-based CSV row number, including the header.
+    """
+    if csv_path is None:
+        csv_path = data_lib_path / "ellipse_pillar_library_data.csv"
+
+    records = []
+    with csv_path.open(newline="") as csv_file:
+        reader = csv.DictReader(csv_file)
+        for csv_row, record in enumerate(reader, start=2):
+            if csv_row < first_data_row:
+                continue
+            if record.get("transmission_schema_version") != str(LIBRARY_SCHEMA_VERSION):
+                continue
+            try:
+                phase = float(record["zero_order_tm_phase_deg"])
+                record_height = float(record["pillar_height_um"])
+                record_period = float(record["period_um"])
+                record_angle = float(record["incident_angle_deg"])
+                radius_x = float(record["radius_x_um"])
+                radius_y = float(record["radius_y_um"])
+                rotation = float(record["rotation_deg"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not all(
+                np.isfinite(value)
+                for value in (
+                    phase,
+                    record_height,
+                    record_period,
+                    record_angle,
+                    radius_x,
+                    radius_y,
+                    rotation,
+                )
+            ):
+                continue
+            if not (
+                np.isclose(record_period, period)
+                and np.isclose(record_height, pillar_height)
+                and np.isclose(record_angle, 0.0)
+            ):
+                continue
+
+            # Elim_Redundincies records the physically identical unrotated
+            # geometry (small r_x, large r_y) as (large r_x, small r_y, 90°).
+            # Convert that canonical form back to global x/y radii so both
+            # halves of the unrotated geometry sweep appear on this map.
+            canonical_rotation = rotation % 180.0
+            if np.isclose(canonical_rotation, 0.0):
+                global_radius_x, global_radius_y = radius_x, radius_y
+            elif np.isclose(canonical_rotation, 90.0):
+                global_radius_x, global_radius_y = radius_y, radius_x
+            else:
+                # A general rotation cannot be represented by only r_x and
+                # r_y in this unrotated-ellipse heatmap.
+                continue
+            records.append(
+                (global_radius_x, global_radius_y, phase % 360.0)
+            )
+
+    if not records:
+        raise ValueError(
+            "No schema-v"
+            f"{LIBRARY_SCHEMA_VERSION} records found for p = {period:g} µm, "
+            f"h = {pillar_height:g} µm and normal incidence "
+            f"in {csv_path}."
+        )
+
+    radius_x_values = np.array(sorted({record[0] for record in records}))
+    radius_y_values = np.array(sorted({record[1] for record in records}))
+    phase_grid = np.full((len(radius_y_values), len(radius_x_values)), np.nan)
+    x_indices = {value: index for index, value in enumerate(radius_x_values)}
+    y_indices = {value: index for index, value in enumerate(radius_y_values)}
+    for radius_x, radius_y, phase in records:
+        phase_grid[y_indices[radius_y], x_indices[radius_x]] = phase
+
+    def cell_edges(values: np.ndarray) -> np.ndarray:
+        """Return cell boundaries for coordinates sampled at cell centers."""
+        if len(values) == 1:
+            half_width = max(abs(values[0]) * 0.05, 0.001)
+            return np.array([values[0] - half_width, values[0] + half_width])
+        midpoints = 0.5 * (values[:-1] + values[1:])
+        return np.concatenate(
+            ([values[0] - (midpoints[0] - values[0])], midpoints,
+             [values[-1] + (values[-1] - midpoints[-1])])
+        )
+
+    fig, ax = plt.subplots(figsize=(7, 5.5))
+    image = ax.pcolormesh(
+        cell_edges(radius_x_values),
+        cell_edges(radius_y_values),
+        phase_grid,
+        cmap="twilight",
+        vmin=0,
+        vmax=360,
+        shading="flat",
+    )
+    ax.set(
+        xlabel=r"$r_x$ (µm)",
+        ylabel=r"$r_y$ (µm)",
+        title=(
+            "Zero-order TM phase: "
+            f"p = {period:g} µm, h = {pillar_height:g} µm"
+        ),
+    )
+    ax.set_xticks(radius_x_values)
+    ax.set_yticks(radius_y_values)
+    colorbar = fig.colorbar(image, ax=ax, ticks=np.arange(0, 361, 45))
+    colorbar.set_label("Phase (degrees)")
+    fig.tight_layout()
+    plt.show()
+    return fig, ax
+
+
+# %% Plot phase and transmission for one fabrication condition
+def plot_phase_transmission(
+    csv_path: Path | None = None,
+    first_data_row: int = 2,
+    period: float = 0.35,
+    pillar_height: float = 0.8,
+) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes]]:
+    """Plot phase and zero-order power for one period/height condition.
+
+    The plot uses normal-incidence records.  Canonical 90-degree entries from
+    ``Elim_Redundincies`` are converted to their equivalent unrotated global
+    ``(r_x, r_y)`` geometry before sorting and plotting.
+    """
+    if csv_path is None:
+        csv_path = data_lib_path / "ellipse_pillar_library_data.csv"
+
+    records = []
+    with csv_path.open(newline="") as csv_file:
+        reader = csv.DictReader(csv_file)
+        for csv_row, record in enumerate(reader, start=2):
+            if csv_row < first_data_row:
+                continue
+            if record.get("transmission_schema_version") != str(LIBRARY_SCHEMA_VERSION):
+                continue
+            try:
+                phase = float(record["zero_order_tm_phase_deg"])
+                transmission = float(record["zero_order_power_estimate"])
+                record_height = float(record["pillar_height_um"])
+                record_period = float(record["period_um"])
+                record_angle = float(record["incident_angle_deg"])
+                radius_x = float(record["radius_x_um"])
+                radius_y = float(record["radius_y_um"])
+                rotation = float(record["rotation_deg"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not all(
+                np.isfinite(value)
+                for value in (
+                    phase,
+                    transmission,
+                    record_height,
+                    record_period,
+                    record_angle,
+                    radius_x,
+                    radius_y,
+                    rotation,
+                )
+            ):
+                continue
+            if not (
+                np.isclose(record_period, period)
+                and np.isclose(record_height, pillar_height)
+                and np.isclose(record_angle, 0.0)
+            ):
+                continue
+
+            canonical_rotation = rotation % 180.0
+            if np.isclose(canonical_rotation, 0.0):
+                global_radius_x, global_radius_y = radius_x, radius_y
+            elif np.isclose(canonical_rotation, 90.0):
+                global_radius_x, global_radius_y = radius_y, radius_x
+            else:
+                continue
+            records.append(
+                {
+                    "radius_x": global_radius_x,
+                    "radius_y": global_radius_y,
+                    "phase": phase % 360.0,
+                    "transmission": transmission,
+                }
+            )
+
+    if not records:
+        raise ValueError(
+            "No schema-v"
+            f"{LIBRARY_SCHEMA_VERSION} records found for p = {period:g} µm, "
+            f"h = {pillar_height:g} µm and normal incidence in {csv_path}."
+        )
+
+    records.sort(key=lambda item: (item["radius_x"], item["radius_y"]))
+    geometry_indices = np.arange(1, len(records) + 1)
+    phases = [item["phase"] for item in records]
+    transmissions = [item["transmission"] for item in records]
+
+    fig, ax_phase = plt.subplots(figsize=(8, 4.8))
+    phase_points = ax_phase.scatter(
+        geometry_indices, phases, marker="o", color="tab:orange"
+    )
+    ax_phase.set(
+        xlabel="Geometry index",
+        ylabel="Phase (degrees)",
+        ylim=(0, 360),
+        title=(
+            "Zero-order phase and power: "
+            f"p = {period:g} µm, h = {pillar_height:g} µm"
+        ),
+    )
+    ax_phase.tick_params(axis="y", labelcolor="tab:orange")
+
+    ax_transmission = ax_phase.twinx()
+    transmission_points = ax_transmission.scatter(
+        geometry_indices, transmissions, marker="x", color="tab:blue"
+    )
+    ax_transmission.set_ylabel("Zero-order power", color="tab:blue")
+    ax_transmission.tick_params(axis="y", labelcolor="tab:blue")
+    ax_phase.legend(
+        [phase_points, transmission_points],
+        ["TM phase", "Zero-order power"],
+        loc="best",
+    )
+    fig.tight_layout()
+    plt.show()
+    return fig, (ax_phase, ax_transmission)
+# %% Plot final period and height choice
+plot_phase_transmission()
+
+plot_phase_heatmap()
+
 # %%
