@@ -142,4 +142,4 @@ def generate_unit_cell_gds_lib(
         gds_files.append(pillar_geometry(directory=directory, **geometry_kwargs))
 
     return gds_files
-# %%
+# %% Write a cell that generates a super cell 
