@@ -12,6 +12,7 @@ dependencies:
   - pytorch
   - pandas
   - pip
+  - tensorboard
   - pip:
     - gdsfactory
     - tidy3d
