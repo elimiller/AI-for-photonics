@@ -113,6 +113,7 @@ def plot_phase_vs_aspect_ratio(
     period_um: float = 0.3,
     incident_angle_deg: float = 0.0,
     csv_path: Path = LEGACY_DATA_PATH,
+    save_svg: bool = False
 ) -> tuple[plt.Figure, plt.Axes]:
     """Plot TM phase against ``r_x / r_y``, colored by ellipse rotation."""
     data = load_legacy_ellipse_data(csv_path)
@@ -160,10 +161,12 @@ def plot_phase_vs_aspect_ratio(
     ax.legend(title="Rotation", ncols=2)
     fig.tight_layout()
     plt.show()
+    if save_svg:
+        fig.savefig("phase_vs_aspect_ratio.svg", format="svg")
     return fig, ax
 
 
 if __name__ == "__main__":
-    plot_phase_vs_aspect_ratio()
+    plot_phase_vs_aspect_ratio(save_svg=True)
 
 # %%

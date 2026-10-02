@@ -1165,6 +1165,7 @@ def plot_phase_coverage(
     csv_path: Path | None = None,
     first_data_row: int = 2,
     incident_angle_deg: float = 0.0,
+    save_svg: bool = False
 ) -> tuple[plt.Figure, np.ndarray]:
     """Plot phase/power coverage in a pillar-height by period grid.
 
@@ -1301,11 +1302,14 @@ def plot_phase_coverage(
     )
     fig.tight_layout(rect=(0, 0, 1, 0.93))
     plt.show()
+    if save_svg:
+        fig.savefig("phase_coverage.svg", format="svg")
     return fig, axes
 
 
+
 # %% Plot
-plot_phase_coverage()
+plot_phase_coverage(save_svg=True)
 
 # %% Validation plot
 def plot_circle_radius_coverage(

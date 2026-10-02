@@ -33,6 +33,6 @@ master_library = pd.read_csv(csv_path)
 library = master_library[(master_library['pillar_height_um'] == 0.8) & (master_library['period_um'] == 0.35)]
 print(library)
 # %% Get phase array
-ML2_phase_profile = np.load("ML2_phase_profile.npy")
-
-# %%
+ML2_phase_profile = np.load(path / "Optimization" / "ML2_phase_profile.npy")
+np.shape(ML2_phase_profile)
+# %% 
