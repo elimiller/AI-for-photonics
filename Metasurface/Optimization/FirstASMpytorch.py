@@ -42,7 +42,7 @@ print(test)
 # %% Adjust grid size to match lattice constant
 def grid_matching(x,y,new_period,old_phase_map):
     #this function will take the old phase map and match it to the new one
-    #Only valid for square grids hence only x as input.
+    #Only valid for square grids hence only x as input. Although this is easy to resolve
     #Only valid if old_period < new_period < 2*old_period
     #Just an approximation still, will need further optimizatoin I'm sure
     x = x*10**6
