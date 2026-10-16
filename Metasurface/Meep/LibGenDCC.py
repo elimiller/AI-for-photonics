@@ -48,8 +48,8 @@ print(sellfit(-0.248)) # Normalized wavelength
 
 theta_list =  [0] 
 wavelength = 0.532             # design wavelength [um]
-period_list = [0.200,0.250,0.300,0.350]            # square-lattice pitch [um]
-pillar_h_list = [0.550,0.600,0.650,0.750,0.800]
+period_list = [0.33,0.34,0.36,0.37]           # square-lattice pitch [um]
+pillar_h_list = [0.78,0.79,0.800,0.81,0.82]
 r_x_list = np.linspace(0.035,0.110,4)
 r_y_list = np.linspace(0.035,0.110,4)
 incident_angle_list = [0]# polar angle in degrees; tilt is in the x-z plane
@@ -57,6 +57,10 @@ RUN_SIMULATION = False
 n_SiN = sellfit(-0.248)
 n_sio2 = 1.46
 resolution = 75               # minimum pixels / um; aligned per simulation cell
+# Keep this opt-in while diagnosing mirror behavior.  It can force a much
+# higher resolution for decimal periods (for example, 0.33 um -> 200/um),
+# even though mirror placement is not consistently improved by doing so.
+ALIGN_MIRROR_GRIDS = False
 courant = 0.5                # conservative FDTD timestep for small SiN features
 dpml = 1.2                    # z-only absorbing boundary thickness [um]
 air_padding = 1.2             # air above and below the structure [um]
@@ -501,8 +505,13 @@ def run_unit_cell(
     apply_mirror_symmetries = (
         use_symmetries and supports_xy_mirror_symmetry(theta_deg)
     )
-    simulation_resolution = grid_aligned_resolution(
-        cell, center_xy_mirrors=apply_mirror_symmetries
+    # The alignment implementation is retained as an opt-in diagnostic.  In
+    # normal sweeps, use the requested resolution directly and retain Meep's
+    # mirror symmetry timeout/retry protection below.
+    simulation_resolution = (
+        grid_aligned_resolution(cell, center_xy_mirrors=apply_mirror_symmetries)
+        if ALIGN_MIRROR_GRIDS
+        else resolution
     )
     monitor_z = 0.5 * cell_z - dpml - air_padding/2
     source_z = -0.5 * cell_z + dpml + air_padding/2
@@ -545,7 +554,7 @@ def run_unit_cell(
             )
         ],
         k_point=k_point,
-        symmetries=symmetries,
+        # symmetries=symmetries,
         resolution=simulation_resolution,
         Courant=courant,
         default_material=mp.air,
@@ -1158,7 +1167,7 @@ constrained_radius_sweeps(
     gds_lib_path,
     data_lib_path,
     radius_samples=4,
-    circles_only=False,
+    circles_only=True,
 )
 # %% Post sim processing and phase coverage plot
 def plot_phase_coverage(
@@ -1309,7 +1318,7 @@ def plot_phase_coverage(
 
 
 # %% Plot
-plot_phase_coverage(save_svg=True)
+plot_phase_coverage(save_svg=False)
 
 # %% Validation plot
 def plot_circle_radius_coverage(
@@ -1411,7 +1420,7 @@ def plot_circle_radius_coverage(
     return fig, (ax_phase, ax_transmission)
 
 
-plot_circle_radius_coverage()
+# plot_circle_radius_coverage(pillar_height_um = 0.78,period_um = 0.35)
 
 # %% Plot heat map as requested
 def plot_phase_heatmap(
