@@ -48,8 +48,10 @@ print(sellfit(-0.248)) # Normalized wavelength
 
 theta_list =  [0] 
 wavelength = 0.532             # design wavelength [um]
-period_list = [0.33,0.34,0.36,0.37]           # square-lattice pitch [um]
-pillar_h_list = [0.78,0.79,0.800,0.81,0.82]
+# period_list = [0.33,0.34,0.35,0.36,0.37]           # square-lattice pitch [um]
+# pillar_h_list = [0.78,0.79,0.800,0.81,0.82]
+period_list = [0.35]           # square-lattice pitch [um]
+pillar_h_list = [0.8]
 r_x_list = np.linspace(0.035,0.110,4)
 r_y_list = np.linspace(0.035,0.110,4)
 incident_angle_list = [0]# polar angle in degrees; tilt is in the x-z plane
@@ -81,7 +83,7 @@ PILLAR_LAYER = (1, 0)
 POLARIZATION = mp.Ex # TM or P polarized
 fcen = 1 / wavelength
 MEEP_PROGRESS_INTERVAL = 5.0
-MAX_SYMMETRY_TIME = 165
+MAX_SYMMETRY_TIME = 1500
 NORMALIZATION_TOLERANCE = 1e-12
 POWER_BALANCE_TOLERANCE = 2e-2
 LIBRARY_SCHEMA_VERSION = 2
@@ -1166,7 +1168,7 @@ constrained_radius_sweeps(
     theta_list,
     gds_lib_path,
     data_lib_path,
-    radius_samples=4,
+    radius_samples=40,
     circles_only=True,
 )
 # %% Post sim processing and phase coverage plot
@@ -1420,7 +1422,7 @@ def plot_circle_radius_coverage(
     return fig, (ax_phase, ax_transmission)
 
 
-# plot_circle_radius_coverage(pillar_height_um = 0.78,period_um = 0.35)
+plot_circle_radius_coverage(pillar_height_um = 0.8,period_um = 0.35)
 
 # %% Plot heat map as requested
 def plot_phase_heatmap(
