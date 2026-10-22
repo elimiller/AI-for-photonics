@@ -20,6 +20,10 @@ from datetime import datetime
 import pandas as pd
 import gdsfactory as gf
 from scipy.interpolate import interp1d, UnivariateSpline
+metasurface_path = Path(__file__).resolve().parent.parent
+if str(metasurface_path) not in sys.path:
+    sys.path.insert(0, str(metasurface_path))
+from Unit_cell_generation import *
 # %% Platform and hardware info
 
 LOG = []
@@ -182,7 +186,7 @@ def smooth_radius(u,radius_response,delta = 0):
     
     return r_min + delta + (r_max - r_min - 2*delta)*torch.sigmoid(u)
 
-def radii_to_u(radii_tensor,radius_response,delta = 0,epsilon = 1e-6):
+def radii_to_u(radii_tensor,radius_response,delta = 0,epsilon = 1e-2):
     #Add clamp (epsilon) value to avoid infinite u values, so it is never actually at the boundary
     logarg = ((radii_tensor - radius_response.min() - delta) / (radius_response.max() - radius_response.min() - 2*delta))
     logarg = logarg.clamp(epsilon,1-epsilon)
@@ -223,7 +227,7 @@ def interpolate_response(query_radius, radius_table, response_table):
 
     fraction = (query_radius - x0) / (x1 - x0)
     return y0 + fraction * (y1 - y0)
-# %% 1. Define Target Functions (each plane) and Derivative
+# %% 1. Define Target Functions and incident field
 X_MIN, X_MAX = -aperture_radius, aperture_radius
 Y_MIN, Y_MAX = -aperture_radius, aperture_radius
 # N_TOTAL = 2000
@@ -234,10 +238,38 @@ w0y = 42.34e-6
 # Hint: use PyTorch operations so the function works directly on tensors.
 def target_amplitude(x,y,w0x,w0y,A):
     return A*torch.exp(-(x**2/(w0x**2) + y**2/(w0y**2)))
-target_x = torch.linspace(X_MIN, X_MAX, 401, device=DEVICE)
-target_y = torch.linspace(Y_MIN, Y_MAX, 401, device=DEVICE)
+target_x = torch.arange(X_MIN, X_MAX, 0.35e-6, device=DEVICE)
+target_y = torch.arange(Y_MIN, Y_MAX, 0.35e-6, device=DEVICE)
 target_X, target_Y = torch.meshgrid(target_x, target_y, indexing="xy")
 target_field = target_amplitude(target_X, target_Y, w0x, w0y, 1.0)
+def incident_field(
+    x, y, w0=2.008e-6, z=None, wavelength=532e-9, A=1.0, n=1.0
+):
+    """Circular Gaussian complex field; all lengths are in meters.
+
+    w0 is the minimum 1/e field (1/e^2 intensity) radius, and A is
+    the on-axis field amplitude at the waist. Positive z places this
+    plane after the waist (diverging beam); negative z gives convergence.
+    With z omitted, match the phase-profile design's beam radius w_ml
+    at the metalens (z = 516.946 um for the current design).
+    Phase follows the ASM convention exp(+1j * kz * z).
+    """
+    z_R = torch.as_tensor(
+        torch.pi * n * w0**2 / wavelength, dtype=x.dtype, device=x.device
+    )
+    if z is None:
+        design_radius = torch.as_tensor(w_ml, dtype=x.dtype, device=x.device)
+        z = z_R * torch.sqrt((design_radius / w0)**2 - 1)
+    z = torch.as_tensor(z, dtype=x.dtype, device=x.device)
+    k = 2 * torch.pi * n / wavelength
+    r_squared = x**2 + y**2
+    w = w0 * torch.sqrt(1 + (z / z_R)**2)
+    inverse_R = z / (z**2 + z_R**2)  # Finite at the waist, where 1/R = 0.
+    gouy_phase = torch.atan(z / z_R)
+
+    amplitude = A * (w0 / w) * torch.exp(-r_squared / w**2)
+    phase = k * z + 0.5 * k * r_squared * inverse_R - gouy_phase
+    return amplitude * torch.exp(1j * phase)
 
 fig, ax = plt.subplots(figsize=(7, 6), constrained_layout=True)
 im = ax.imshow(
@@ -252,126 +284,212 @@ im = ax.imshow(
 fig.colorbar(im, ax=ax, label="Target amplitude")
 ax.set(xlabel="x (μm)", ylabel="y (μm)", title="Target amplitude")
 plt.show()
-# TODO 2: Create N_TOTAL evenly spaced x values on [X_MIN, X_MAX].[Y_MIN, Y_MAX]
-# The network expects shape [N, 1], so add a singleton second dimension.
-# x_all = torch.linspace(X_MIN, X_MAX, N_TOTAL, device=DEVICE).unsqueeze(1)
-# y_all = torch.linspace(Y_MIN, Y_MAX, N_TOTAL, device=DEVICE).unsqueeze(1)
-
-# TODO 3: Evaluate the target function at every x value.
-# y_all = target_amplitude(x_all, y_all, w0x, w0y, 1.0)
-
-# N_TRAIN = int(0.70 * N_TOTAL)
-# N_VAL   = int(0.15 * N_TOTAL)
-# N_TEST  = N_TOTAL - N_TRAIN - N_VAL
-
-# Random permutation
-# g = torch.Generator().manual_seed(SEED)
-# indices = torch.randperm(N_TOTAL, generator=g)
-
-# train_idx = indices[:N_TRAIN]
-# val_idx   = indices[N_TRAIN:N_TRAIN + N_VAL]
-# test_idx  = indices[N_TRAIN + N_VAL:]
-
-# Get tensors
-# x_train, y_train = x_all[train_idx], y_all[train_idx]
-# x_val,   y_val   = x_all[val_idx],   y_all[val_idx]
-# x_test,  y_test  = x_all[test_idx],  y_all[test_idx]
-
-# Construct the datasets
-# training_set = torch.utils.data.TensorDataset(x_train, y_train)
-# validation_set = torch.utils.data.TensorDataset(x_val, y_val)
-# test_set = torch.utils.data.TensorDataset(x_test, y_test)
-
-# training_loader = torch.utils.data.DataLoader(
-#     training_set, batch_size=BATCH_SIZE, shuffle=True
-# )
-# validation_loader = torch.utils.data.DataLoader(
-#     validation_set, batch_size=BATCH_SIZE, shuffle=False
-# )
-# test_loader = torch.utils.data.DataLoader(
-#     test_set, batch_size=BATCH_SIZE, shuffle=False
-# )
-
-# Report
-# log(f"Training set has {len(training_set)} samples")
-# log(f"Validation set has {len(validation_set)} samples")
-# log(f"Test set has {len(test_set)} samples")
-
-# plt.figure(figsize=(9, 3))
-# plt.plot(x_all.cpu(), y_all.cpu(), lw=1.5, color="0.75", label="$f(x) = x\\,\\sin(x)$")
-# plt.xlabel("x"); plt.ylabel("f(x)"); plt.grid(alpha=0.3)
-# plt.legend()
-# plt.show()
 
 # %% 2. Model definition (Forward ASM and loss functions)
-class FunctionFitter(torch.nn.Module):
+class Angular_Spectral_Method(torch.nn.Module):
 
-    def __init__(self):
+    def __init__(self,shape,dx,dy,wavelength,z,n = 1.0,dtype = torch.float32):
         super().__init__()
 
-        self.linear1 = torch.nn.Linear(1, 64)
-        self.activation = torch.nn.ReLU()
-        self.linear2 = torch.nn.Linear(64, 64)
-        self.linear3 = torch.nn.Linear(64, 1)
-
-    def forward(self, x):
-        # TODO 4: Implement the forward pass.
-        # Apply linear1 -> activation -> linear2 -> activation -> linear3.
-        # YOUR CODE HERE
-        x = self.linear1(x)
-        x = self.activation(x)
-        x = self.linear2(x)
-        x = self.activation(x)
-        x = self.linear3(x)
-
-        return x
+        self.shape = tuple(shape)
+        nx,ny = self.shape
+        fx = torch.fft.fftfreq(nx, dx)
+        fy = torch.fft.fftfreq(ny, dy)
+        FX,FY = torch.meshgrid(fx,fy,indexing = 'ij')
+        k = 2*torch.pi/wavelength
+        kx = 2*torch.pi*FX
+        ky = 2*torch.pi*FY
+        kz_squared = k**2 - kx**2 - ky**2
+        kz = torch.sqrt(torch.complex(kz_squared, torch.zeros_like(kz_squared)))
+        H = torch.exp(1j*kz*z)
+        self.register_buffer('H', H)
+    def forward(self, field):
+        spectrum = torch.fft.fft2(field)
+        popagated_spectrum = spectrum * self.H
+        return torch.fft.ifft2(popagated_spectrum)
 
 seed_everything()
-model = FunctionFitter().to(DEVICE)
+model = Angular_Spectral_Method(target_X.shape, dx=0.35e-6, dy=0.35e-6, wavelength=532e-9, z=2.64529e-3).to(DEVICE)
 
 log(f"model: {sum(p.numel() for p in model.parameters()):,} parameters, "
     f"{sum(isinstance(m, torch.nn.Linear) for m in model.modules())} Linear layers")
 print(model)
+# %% Define loss function
+def overlap_loss(propagated, target):
+    """Normalized coherent overlap for two 2D scalar fields."""
+    if propagated.shape != target.shape:
+        raise ValueError("Fields must have identical shapes and coordinates.")
 
-# %% 3. Training loop
-EPOCHS, LR, REPORT_EVERY = 2000, 2e-3, len(training_loader)
+    overlap = torch.sum(target.conj() * propagated)
 
-loss_fn = torch.nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-7)
+    target_norm = torch.sum(target.abs().square())
+    propagated_norm = torch.sum(propagated.abs().square())
 
-def train_one_epoch(epoch_index, tb_writer):
-    running_loss = 0.
-    last_loss = 0.
+    denominator = target_norm * propagated_norm
+    tiny = torch.finfo(denominator.dtype).tiny
 
-    for i, data in enumerate(training_loader):
-        # Every data instance is an input + label pair
-        inputs, labels = data
+    efficiency = overlap.abs().square() / denominator.clamp_min(tiny)
 
-        # TODO 5: Clear gradients from the previous batch.
-        optimizer.zero_grad()
+    return 1.0 - efficiency
+# %% 3. One optimization step
+EPOCHS, LR, REPORT_EVERY = 5000, 2e-3, 5
 
-        # TODO 6: Run the model on this batch.
-        outputs = model(inputs)
+loss_fn = overlap_loss
+optimizer = torch.optim.Adam([u_tensor], lr=LR)
+# scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-7)
 
-        # TODO 7: Compute mean-squared error between predictions and labels.
-        loss = loss_fn(outputs, labels)
+def run_one_epoch(epoch_index, tb_writer=None):
+    if target_X.shape != u_tensor.shape:
+        raise ValueError('Shapes dont match')
+    radii = smooth_radius(u_tensor,radius_response)
+    phase = interpolate_response(radii, radius_table, phase_table)
+    amplitude = interpolate_response(radii, radius_table, amplitude_table)
+    transmission = torch.polar(amplitude, phase)
+    incident_field_tensor = incident_field(target_X, target_Y)
+    E0 = incident_field_tensor * transmission
+    Ez = model(E0)
+    target_field = target_amplitude(
+    target_X, target_Y, w0x=10.58e-6, w0y=42.34e-6, A=1.0)
 
-        # TODO 8: Backpropagate the loss, then update the model weights.
-        loss.backward()
-        optimizer.step()
+    loss = overlap_loss(Ez, target_field)
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
 
-        # Gather data and report
-        running_loss += loss.item()
-        if i % REPORT_EVERY == REPORT_EVERY - 1:
-            last_loss = running_loss / REPORT_EVERY
-            tb_x = epoch_index * len(training_loader) + i + 1
-            tb_writer.add_scalar('Loss/train', last_loss, tb_x)
-            running_loss = 0.
+    return loss.item()
 
-    return last_loss
+# %% 4. Optimization loop
+start_time = time.time()
+for epoch in range(EPOCHS):
+    last_loss = run_one_epoch(epoch)
+    # scheduler.step()
 
-# %% 4. Training and output logging perhaps executable file
+    if epoch % REPORT_EVERY == 0:
+        elapsed = time.time() - start_time
+        log(f"Epoch {epoch:>4d} | loss {last_loss:.6f} | "
+            f"elapsed {elapsed:.1f} sec")
+        start_time = time.time()
+
+# %% Plot optimized field (Written completely by codex)
+with torch.no_grad():
+    optimized_radii = smooth_radius(u_tensor, radius_response)
+    optimized_phase = interpolate_response(
+        optimized_radii, radius_table, phase_table
+    )
+    optimized_amplitude = interpolate_response(
+        optimized_radii, radius_table, amplitude_table
+    )
+    optimized_transmission = torch.polar(optimized_amplitude, optimized_phase)
+    optimized_field = model(
+        incident_field(target_X, target_Y) * optimized_transmission
+    )
+    optimized_overlap = 1.0 - overlap_loss(optimized_field, target_field).item()
+    # Remove the constant phase offset, which the overlap loss ignores.
+    global_phase = torch.angle(torch.sum(target_field.conj() * optimized_field))
+    field_amplitude = optimized_field.abs().cpu().numpy()
+    field_phase = torch.angle(
+        optimized_field * torch.exp(-1j * global_phase)
+    ).cpu().numpy()
+
+extent_um = [
+    target_x[0].item() * 1e6, target_x[-1].item() * 1e6,
+    target_y[0].item() * 1e6, target_y[-1].item() * 1e6,
+]
+fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
+amplitude_image = axes[0].imshow(
+    field_amplitude, extent=extent_um, origin="lower",
+    cmap="viridis", vmin=0, aspect="equal",
+)
+fig.colorbar(amplitude_image, ax=axes[0], label="Field amplitude |E|")
+axes[0].set(title="Optimized amplitude", xlabel="x (μm)", ylabel="y (μm)")
+
+phase_image = axes[1].imshow(
+    field_phase, extent=extent_um, origin="lower",
+    cmap="twilight", vmin=-np.pi, vmax=np.pi, aspect="equal",
+)
+phase_colorbar = fig.colorbar(
+    phase_image, ax=axes[1], label="Phase relative to target (rad)"
+)
+phase_colorbar.set_ticks([-np.pi, 0, np.pi], labels=["−π", "0", "π"])
+axes[1].set(title="Optimized phase", xlabel="x (μm)", ylabel="y (μm)")
+fig.suptitle(f"Optimized output field — coherent overlap {optimized_overlap:.4f}")
+plt.show()
+# %% Final overlap
+
 
 # %% Validate worst case supercell near field for FDTD vs ASM
-# %% Stitch together final gds 
+# %% Stitch together final gds and save
+metasurface_path = Path(__file__).resolve().parent.parent
+lens_gds_path = metasurface_path / "Metalens GDS"
+
+def gds_stitching(
+    optimized_radii,
+    output_path=None,
+    pitch_um=0.35,
+    x_um=None,
+    y_um=None,
+    circle_points=128,
+):
+    """Export a [y, x] radius map as circular pillars on GDS layer (1, 0).
+
+    Radii, pitch, and optional 1-D placement coordinates are in micrometers.
+    Without placement coordinates, center the array at the origin. All pixels
+    are exported, matching the square aperture used by the forward model.
+    Return the written GDS path.
+    """
+    if isinstance(optimized_radii, torch.Tensor):
+        optimized_radii = optimized_radii.detach().cpu().numpy()
+    radii_um = np.asarray(optimized_radii, dtype=float)
+    if radii_um.ndim != 2 or radii_um.size == 0:
+        raise ValueError("optimized_radii must be a nonempty 2-D radius map.")
+    if not np.isfinite(radii_um).all() or (radii_um <= 0).any():
+        raise ValueError("All pillar radii must be finite and positive.")
+    if not np.isfinite(pitch_um) or pitch_um <= 0:
+        raise ValueError("pitch_um must be finite and positive.")
+    if not isinstance(circle_points, int) or circle_points < 8:
+        raise ValueError("circle_points must be an integer >= 8.")
+
+    ny, nx = radii_um.shape
+    coordinates = []
+    for values, size in ((x_um, nx), (y_um, ny)):
+        if values is None:
+            values = (np.arange(size) - (size - 1) / 2) * pitch_um
+        elif isinstance(values, torch.Tensor):
+            values = values.detach().cpu().numpy()
+        values = np.asarray(values, dtype=float)
+        if values.shape != (size,) or not np.isfinite(values).all():
+            raise ValueError("Placement coordinates must match the radius-map axes.")
+        if size > 1 and not np.allclose(
+            np.diff(values), pitch_um, rtol=1e-4, atol=1e-6
+        ):
+            raise ValueError("Placement coordinates must use pitch_um spacing.")
+        coordinates.append(values)
+    x_positions, y_positions = coordinates
+
+    # Reuse an active PDK, or activate the generic PDK for explicit GDS layers.
+    gf.get_active_pdk("generic")
+    lens = gf.Component()
+    angles = np.linspace(0, 2 * np.pi, circle_points, endpoint=False)
+    unit_circle = np.column_stack((np.cos(angles), np.sin(angles)))
+    for iy, y_position in enumerate(y_positions):
+        for ix, x_position in enumerate(x_positions):
+            points = radii_um[iy, ix] * unit_circle + (x_position, y_position)
+            lens.add_polygon(points, layer=(1, 0))
+
+    output_path = (
+        lens_gds_path / "optimized_metalens.gds"
+        if output_path is None else Path(output_path)
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    return lens.write_gds(output_path, with_metadata=False)
+
+with torch.no_grad():
+    optimized_radii = smooth_radius(u_tensor, radius_response)
+saved_lens_path = gds_stitching(
+    optimized_radii,
+    x_um=target_x * 1e6,
+    y_um=target_y * 1e6,
+)
+log(f"Saved optimized lens GDS: {saved_lens_path}")
+
+# %%
