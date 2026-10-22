@@ -3,6 +3,23 @@
 # This will be a worst case supercell sim
 #Goal of this notebook is to get idea of error introduced by LPA
 
+
+# %% imports
+import os
+import sys, time, random, platform
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import matplotlib
+import matplotlib.pyplot as plt
+from pathlib import Path
+# PyTorch TensorBoard support, as in the introyt training tutorial
+from torch.utils.tensorboard import SummaryWriter
+from datetime import datetime
+import pandas as pd
+import gdsfactory as gf
+from scipy.interpolate import interp1d, UnivariateSpline
 # %% Platform and hardware info
 
 LOG = []
@@ -28,22 +45,6 @@ log(f"backend     : {BACKEND}  ({DEVICE})")
 if DEVICE.type == "cuda":
     log(f"gpu         : {torch.cuda.get_device_name(0)}  |  cuda {torch.version.cuda}")
 log(f"seed        : {SEED}")
-# %% imports
-import os
-import sys, time, random, platform
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import matplotlib
-import matplotlib.pyplot as plt
-from pathlib import Path
-# PyTorch TensorBoard support, as in the introyt training tutorial
-from torch.utils.tensorboard import SummaryWriter
-from datetime import datetime
-import pandas as pd
-import gdsfactory as gf
-from scipy.interpolate import interp1d
 # %% Bring in library data and create array of unit cell responses
 path = Path(__file__).parent.parent
 print(path)
@@ -55,7 +56,8 @@ csv_path = data_lib_path / "ellipse_pillar_library_data.csv"
 print(csv_path)
 master_library = pd.read_csv(csv_path)
 #Get correct subset of library and remove values where there is no tranmsission
-library = master_library[(master_library['pillar_height_um'] == 0.8) & (master_library['period_um'] == 0.35) & (master_library['radius_x_um'] == master_library['radius_y_um']) & ((master_library["radius_x_um"] <= 0.121) | (master_library["radius_x_um"] >= 0.128))]
+library = master_library[(master_library['pillar_height_um'] == 0.8) & (master_library['period_um'] == 0.35) & (master_library['radius_x_um'] == master_library['radius_y_um']) & ((master_library['radius_x_um'] <= 0.108205128
+))]
 print(library)
 
 # %% Get phase array from phase map
@@ -134,6 +136,17 @@ ax.set(
     title="Metalens 1 — wrapped phase profile",
 )
 plt.show()
+# %% phase response vs radii unwrap 
+#first, plot phase response from library to reconfirm what we have
+fit_library = library.sort_values("radius_x_um").copy()
+
+radius_response = fit_library["radius_x_um"].to_numpy()
+phase_response_unwrapped = np.unwrap(
+    np.deg2rad(fit_library["zero_order_tm_phase_deg"].to_numpy())
+)
+transmission_response = fit_library["zero_order_tm_magnitude"].to_numpy()
+plt.plot(radius_response, phase_response_unwrapped, "o")
+print(radius_response.max())
 # %% Initialize pytorch tensor. Construct apreture i.e., apply data library to phase map
 def initialize_radii(phase_map,library):
     #This function will take the phase map and the library and return a tensor of radii
@@ -149,80 +162,146 @@ def initialize_radii(phase_map,library):
             closest_phase_idx = (library['zero_order_tm_phase_deg']*np.pi/180 - phase).abs().idxmin()
             radii[i, j] = library.loc[closest_phase_idx, 'radius_x_um']
     return torch.tensor(radii, device=DEVICE)
-# %% Print radii to check
-radii_tensor = initialize_radii(new_phase_map, library)
-print(radii_tensor)
-# %% Curve fit phase response to make differentiable
-#first, plot phase response from library to reconfirm what we have
-fit_library = library.sort_values("radius_x_um").copy()
+def intialize_radii_tensor(phase_map, phase_response,radius_response):
+    radii_tensor = torch.zeros(phase_map.shape, device=DEVICE)
+    for i in range(phase_map.shape[0]):
+        for j in range(phase_map.shape[1]):
+            phase = phase_map[i, j]
+            # Find the closest phase in the library
+            phase_error = np.abs(np.angle(np.exp(1j*(phase_response - phase))))
+            closest_phase_idx = phase_error.argmin()
+            radii_tensor[i, j] = radius_response[closest_phase_idx]
+    return radii_tensor
+radii_tensor = intialize_radii_tensor(new_phase_map, phase_response_unwrapped, radius_response)
+print(radii_tensor.max())
+# %% Convert initial radii to leaf parameter u for continous differentiability
 
-radius_response = fit_library["radius_x_um"].to_numpy()
-phase_response = np.unwrap(
-    np.deg2rad(fit_library["zero_order_tm_phase_deg"].to_numpy())
+def smooth_radius(u,radius_response,delta = 0):
+    r_min = radius_response.min()
+    r_max = radius_response.max()
+    
+    return r_min + delta + (r_max - r_min - 2*delta)*torch.sigmoid(u)
+
+def radii_to_u(radii_tensor,radius_response,delta = 0,epsilon = 1e-6):
+    #Add clamp (epsilon) value to avoid infinite u values, so it is never actually at the boundary
+    logarg = ((radii_tensor - radius_response.min() - delta) / (radius_response.max() - radius_response.min() - 2*delta))
+    logarg = logarg.clamp(epsilon,1-epsilon)
+    return torch.logit(logarg)
+u_tensor = radii_to_u(radii_tensor,radius_response,delta = 0).detach().clone().requires_grad_(True)
+print(torch.isfinite(u_tensor).all())
+print(u_tensor.max())
+print(u_tensor.min())
+print(u_tensor)
+smooth_radius_tensor = smooth_radius(u_tensor,radius_response,delta = 0)
+print(torch.abs(smooth_radius_tensor - radii_tensor).max())
+# %% Connect the u tensor/radius to the phase response via torch peacewise intterpolant
+# Fixed library tables for the differentiable forward model.
+radius_table = torch.as_tensor(
+    radius_response, dtype=torch.float32, device=DEVICE
 )
+phase_table = torch.as_tensor(
+    phase_response_unwrapped, dtype=torch.float32, device=DEVICE
+)
+amplitude_table = torch.as_tensor(
+    transmission_response, dtype=torch.float32, device=DEVICE
+)
+def interpolate_response(query_radius, radius_table, response_table):
+    """
+    Interpolate y_table(x_table) at every value in x.
 
-plt.plot(radius_response, phase_response, "o")
+    x:       arbitrary-shaped tensor, e.g. the 2-D radius map
+    x_table: sorted 1-D library radii
+    y_table: library response at those radii
+    """
+    idx = torch.searchsorted(radius_table, query_radius, right=True)
+    idx = idx.clamp(1, radius_table.numel() - 1)
 
-# For interpolation, will be easier to unmod it, and then mod it back to [0, 2pi] after interpolation
+    x0 = radius_table[idx - 1]
+    x1 = radius_table[idx]
+    y0 = response_table[idx - 1]
+    y1 = response_table[idx]
+
+    fraction = (query_radius - x0) / (x1 - x0)
+    return y0 + fraction * (y1 - y0)
 # %% 1. Define Target Functions (each plane) and Derivative
-X_MIN, X_MAX = -10.0, 10.0
-N_TOTAL = 2000
-BATCH_SIZE = 140
-
-# TODO 1: Define the target function f(x) = x * sin(x).
+X_MIN, X_MAX = -aperture_radius, aperture_radius
+Y_MIN, Y_MAX = -aperture_radius, aperture_radius
+# N_TOTAL = 2000
+# BATCH_SIZE = 140
+w0x = 10.58e-6  # meters, matching the aperture coordinates
+w0y = 42.34e-6
+# TODO 1: Define the target function 
 # Hint: use PyTorch operations so the function works directly on tensors.
-def f(x):
-    return x * torch.sin(x)
+def target_amplitude(x,y,w0x,w0y,A):
+    return A*torch.exp(-(x**2/(w0x**2) + y**2/(w0y**2)))
+target_x = torch.linspace(X_MIN, X_MAX, 401, device=DEVICE)
+target_y = torch.linspace(Y_MIN, Y_MAX, 401, device=DEVICE)
+target_X, target_Y = torch.meshgrid(target_x, target_y, indexing="xy")
+target_field = target_amplitude(target_X, target_Y, w0x, w0y, 1.0)
 
-# TODO 2: Create N_TOTAL evenly spaced x values on [X_MIN, X_MAX].
+fig, ax = plt.subplots(figsize=(7, 6), constrained_layout=True)
+im = ax.imshow(
+    target_field.detach().cpu().numpy(),
+    extent=[X_MIN * 1e6, X_MAX * 1e6, Y_MIN * 1e6, Y_MAX * 1e6],
+    origin="lower",
+    cmap="viridis",
+    aspect="equal",
+    vmin=0,
+    vmax=1,
+)
+fig.colorbar(im, ax=ax, label="Target amplitude")
+ax.set(xlabel="x (μm)", ylabel="y (μm)", title="Target amplitude")
+plt.show()
+# TODO 2: Create N_TOTAL evenly spaced x values on [X_MIN, X_MAX].[Y_MIN, Y_MAX]
 # The network expects shape [N, 1], so add a singleton second dimension.
-x_all = torch.linspace(X_MIN, X_MAX, N_TOTAL, device=DEVICE).unsqueeze(1)
+# x_all = torch.linspace(X_MIN, X_MAX, N_TOTAL, device=DEVICE).unsqueeze(1)
+# y_all = torch.linspace(Y_MIN, Y_MAX, N_TOTAL, device=DEVICE).unsqueeze(1)
 
 # TODO 3: Evaluate the target function at every x value.
-y_all = f(x_all)
+# y_all = target_amplitude(x_all, y_all, w0x, w0y, 1.0)
 
-N_TRAIN = int(0.70 * N_TOTAL)
-N_VAL   = int(0.15 * N_TOTAL)
-N_TEST  = N_TOTAL - N_TRAIN - N_VAL
+# N_TRAIN = int(0.70 * N_TOTAL)
+# N_VAL   = int(0.15 * N_TOTAL)
+# N_TEST  = N_TOTAL - N_TRAIN - N_VAL
 
 # Random permutation
-g = torch.Generator().manual_seed(SEED)
-indices = torch.randperm(N_TOTAL, generator=g)
+# g = torch.Generator().manual_seed(SEED)
+# indices = torch.randperm(N_TOTAL, generator=g)
 
-train_idx = indices[:N_TRAIN]
-val_idx   = indices[N_TRAIN:N_TRAIN + N_VAL]
-test_idx  = indices[N_TRAIN + N_VAL:]
+# train_idx = indices[:N_TRAIN]
+# val_idx   = indices[N_TRAIN:N_TRAIN + N_VAL]
+# test_idx  = indices[N_TRAIN + N_VAL:]
 
 # Get tensors
-x_train, y_train = x_all[train_idx], y_all[train_idx]
-x_val,   y_val   = x_all[val_idx],   y_all[val_idx]
-x_test,  y_test  = x_all[test_idx],  y_all[test_idx]
+# x_train, y_train = x_all[train_idx], y_all[train_idx]
+# x_val,   y_val   = x_all[val_idx],   y_all[val_idx]
+# x_test,  y_test  = x_all[test_idx],  y_all[test_idx]
 
 # Construct the datasets
-training_set = torch.utils.data.TensorDataset(x_train, y_train)
-validation_set = torch.utils.data.TensorDataset(x_val, y_val)
-test_set = torch.utils.data.TensorDataset(x_test, y_test)
+# training_set = torch.utils.data.TensorDataset(x_train, y_train)
+# validation_set = torch.utils.data.TensorDataset(x_val, y_val)
+# test_set = torch.utils.data.TensorDataset(x_test, y_test)
 
-training_loader = torch.utils.data.DataLoader(
-    training_set, batch_size=BATCH_SIZE, shuffle=True
-)
-validation_loader = torch.utils.data.DataLoader(
-    validation_set, batch_size=BATCH_SIZE, shuffle=False
-)
-test_loader = torch.utils.data.DataLoader(
-    test_set, batch_size=BATCH_SIZE, shuffle=False
-)
+# training_loader = torch.utils.data.DataLoader(
+#     training_set, batch_size=BATCH_SIZE, shuffle=True
+# )
+# validation_loader = torch.utils.data.DataLoader(
+#     validation_set, batch_size=BATCH_SIZE, shuffle=False
+# )
+# test_loader = torch.utils.data.DataLoader(
+#     test_set, batch_size=BATCH_SIZE, shuffle=False
+# )
 
 # Report
-log(f"Training set has {len(training_set)} samples")
-log(f"Validation set has {len(validation_set)} samples")
-log(f"Test set has {len(test_set)} samples")
+# log(f"Training set has {len(training_set)} samples")
+# log(f"Validation set has {len(validation_set)} samples")
+# log(f"Test set has {len(test_set)} samples")
 
-plt.figure(figsize=(9, 3))
-plt.plot(x_all.cpu(), y_all.cpu(), lw=1.5, color="0.75", label="$f(x) = x\\,\\sin(x)$")
-plt.xlabel("x"); plt.ylabel("f(x)"); plt.grid(alpha=0.3)
-plt.legend()
-plt.show()
+# plt.figure(figsize=(9, 3))
+# plt.plot(x_all.cpu(), y_all.cpu(), lw=1.5, color="0.75", label="$f(x) = x\\,\\sin(x)$")
+# plt.xlabel("x"); plt.ylabel("f(x)"); plt.grid(alpha=0.3)
+# plt.legend()
+# plt.show()
 
 # %% 2. Model definition (Forward ASM and loss functions)
 class FunctionFitter(torch.nn.Module):
@@ -255,6 +334,44 @@ log(f"model: {sum(p.numel() for p in model.parameters()):,} parameters, "
 print(model)
 
 # %% 3. Training loop
+EPOCHS, LR, REPORT_EVERY = 2000, 2e-3, len(training_loader)
+
+loss_fn = torch.nn.MSELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-7)
+
+def train_one_epoch(epoch_index, tb_writer):
+    running_loss = 0.
+    last_loss = 0.
+
+    for i, data in enumerate(training_loader):
+        # Every data instance is an input + label pair
+        inputs, labels = data
+
+        # TODO 5: Clear gradients from the previous batch.
+        optimizer.zero_grad()
+
+        # TODO 6: Run the model on this batch.
+        outputs = model(inputs)
+
+        # TODO 7: Compute mean-squared error between predictions and labels.
+        loss = loss_fn(outputs, labels)
+
+        # TODO 8: Backpropagate the loss, then update the model weights.
+        loss.backward()
+        optimizer.step()
+
+        # Gather data and report
+        running_loss += loss.item()
+        if i % REPORT_EVERY == REPORT_EVERY - 1:
+            last_loss = running_loss / REPORT_EVERY
+            tb_x = epoch_index * len(training_loader) + i + 1
+            tb_writer.add_scalar('Loss/train', last_loss, tb_x)
+            running_loss = 0.
+
+    return last_loss
+
 # %% 4. Training and output logging perhaps executable file
+
 # %% Validate worst case supercell near field for FDTD vs ASM
 # %% Stitch together final gds 
