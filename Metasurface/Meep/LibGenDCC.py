@@ -48,12 +48,11 @@ print(sellfit(-0.248)) # Normalized wavelength
 
 theta_list =  [0] 
 wavelength = 0.532             # design wavelength [um]
-# period_list = [0.33,0.34,0.35,0.36,0.37]           # square-lattice pitch [um]
-# pillar_h_list = [0.78,0.79,0.800,0.81,0.82]
+
 period_list = [0.35]           # square-lattice pitch [um]
 pillar_h_list = [0.8]
-r_x_list = np.linspace(0.035,0.110,4)
-r_y_list = np.linspace(0.035,0.110,4)
+r_x_list = np.linspace(0.5,0.5,100)
+r_y_list = np.linspace(0.5,0.5,100)
 incident_angle_list = [0]# polar angle in degrees; tilt is in the x-z plane
 RUN_SIMULATION = False
 n_SiN = sellfit(-0.248)
@@ -1168,7 +1167,7 @@ constrained_radius_sweeps(
     theta_list,
     gds_lib_path,
     data_lib_path,
-    radius_samples=40,
+    radius_samples=400,
     circles_only=True,
 )
 # %% Post sim processing and phase coverage plot
@@ -1328,11 +1327,12 @@ def plot_circle_radius_coverage(
     incident_angle_deg: float = 0.0,
     pillar_height_um: float | None = None,
     period_um: float | None = None,
-) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes]]:
+) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes]] | None:
     """Plot circular-pillar phase and transmission against pillar radius.
 
     When the CSV has more than one height/period condition, select one with
     ``pillar_height_um`` and ``period_um`` to avoid mixing distinct designs.
+    Return None without plotting if the selected condition has no records.
     """
     if csv_path is None:
         csv_path = data_lib_path / "ellipse_pillar_library_data.csv"
@@ -1390,7 +1390,7 @@ def plot_circle_radius_coverage(
         key=lambda item: item["radius"],
     )
     if not records:
-        raise ValueError("No circular-pillar records match the selected condition.")
+        return None
 
     radii = [item["radius"] for item in records]
     phases = [(item["phase"] + 70) % 360  for item in records]
@@ -1423,7 +1423,12 @@ def plot_circle_radius_coverage(
 
 
 plot_circle_radius_coverage(pillar_height_um = 0.8,period_um = 0.35)
-
+# %% Plot stability circles
+period_list0 = [0.33,0.34,0.35,0.36,0.37]           # square-lattice pitch [um]
+pillar_h_list0 = [0.78,0.79,0.800,0.81,0.82]
+for period in period_list0:
+    for pillar_h in pillar_h_list0:
+        plot_circle_radius_coverage(pillar_height_um = pillar_h,period_um = period)
 # %% Plot heat map as requested
 def plot_phase_heatmap(
     csv_path: Path | None = None,

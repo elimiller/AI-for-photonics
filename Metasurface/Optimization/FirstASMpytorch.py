@@ -6,6 +6,7 @@
 
 # %% imports
 import os
+import csv
 import sys, time, random, platform
 import numpy as np
 import torch
@@ -26,9 +27,17 @@ if str(metasurface_path) not in sys.path:
 from Unit_cell_generation import *
 # %% Platform and hardware info
 
+run_dir = Path(__file__).resolve().parent / "runs" / (
+    "FirstASMpytorch_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+)
+run_dir.mkdir(parents=True, exist_ok=True)
 LOG = []
 def log(msg=""):
     LOG.append(str(msg)); print(msg)
+    with (run_dir / "run.log").open("a", encoding="utf-8") as log_file:
+        log_file.write(str(msg) + "\n")
+
+log(f"Run outputs : {run_dir}")
 
 if torch.cuda.is_available():
     DEVICE, BACKEND = torch.device("cuda"), "CUDA"
@@ -60,8 +69,9 @@ csv_path = data_lib_path / "ellipse_pillar_library_data.csv"
 print(csv_path)
 master_library = pd.read_csv(csv_path)
 #Get correct subset of library and remove values where there is no tranmsission
-library = master_library[(master_library['pillar_height_um'] == 0.8) & (master_library['period_um'] == 0.35) & (master_library['radius_x_um'] == master_library['radius_y_um']) & ((master_library['radius_x_um'] <= 0.108205128
-))]
+# library = master_library[(master_library['pillar_height_um'] == 0.8) & (master_library['period_um'] == 0.35) & (master_library['radius_x_um'] == master_library['radius_y_um']) & ((master_library['radius_x_um'] <= 0.108205128))]
+library = master_library[(master_library['pillar_height_um'] == 0.8) & (master_library['period_um'] == 0.35) & (master_library['radius_x_um'] == master_library['radius_y_um'])]
+
 print(library)
 
 # %% Get phase array from phase map
@@ -150,6 +160,9 @@ phase_response_unwrapped = np.unwrap(
 )
 transmission_response = fit_library["zero_order_tm_magnitude"].to_numpy()
 plt.plot(radius_response, phase_response_unwrapped, "o")
+plt.xlabel('Radius (um)')
+plt.ylabel('Unwrapped phase response (radians)')
+plt.title('Truncated phase response')
 print(radius_response.max())
 # %% Initialize pytorch tensor. Construct apreture i.e., apply data library to phase map
 def initialize_radii(phase_map,library):
@@ -331,13 +344,66 @@ def overlap_loss(propagated, target):
     efficiency = overlap.abs().square() / denominator.clamp_min(tiny)
 
     return 1.0 - efficiency
+
+# %% Plot the focal-plane field before optimization
+def plot_focal_field(field, target, title, output_path):
+    """Show amplitude and phase with the constant phase offset removed."""
+    with torch.no_grad():
+        overlap = 1.0 - overlap_loss(field, target).item()
+        global_phase = torch.angle(torch.sum(target.conj() * field))
+        field_amplitude = field.abs().cpu().numpy()
+        field_phase = torch.angle(
+            field * torch.exp(-1j * global_phase)
+        ).cpu().numpy()
+
+    extent_um = [
+        target_x[0].item() * 1e6, target_x[-1].item() * 1e6,
+        target_y[0].item() * 1e6, target_y[-1].item() * 1e6,
+    ]
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
+    amplitude_image = axes[0].imshow(
+        field_amplitude, extent=extent_um, origin="lower",
+        cmap="viridis", vmin=0, aspect="equal",
+    )
+    fig.colorbar(amplitude_image, ax=axes[0], label="Field amplitude |E|")
+    axes[0].set(title="Amplitude", xlabel="x (μm)", ylabel="y (μm)")
+    phase_image = axes[1].imshow(
+        field_phase, extent=extent_um, origin="lower",
+        cmap="twilight", vmin=-np.pi, vmax=np.pi, aspect="equal",
+    )
+    phase_colorbar = fig.colorbar(
+        phase_image, ax=axes[1], label="Phase relative to target (rad)"
+    )
+    phase_colorbar.set_ticks([-np.pi, 0, np.pi], labels=["−π", "0", "π"])
+    axes[1].set(title="Phase", xlabel="x (μm)", ylabel="y (μm)")
+    fig.suptitle(f"{title} — coherent overlap {overlap:.4f}")
+    fig.savefig(output_path, dpi=200)
+    plt.show()
+    return overlap
+
+with torch.no_grad():
+    # Match the bounded radii used by the first optimization step.
+    initial_radii = smooth_radius(u_tensor, radius_response)
+    initial_phase = interpolate_response(initial_radii, radius_table, phase_table)
+    initial_amplitude = interpolate_response(
+        initial_radii, radius_table, amplitude_table
+    )
+    initial_transmission = torch.polar(initial_amplitude, initial_phase)
+    initial_field = model(incident_field(target_X, target_Y) * initial_transmission)
+
+initial_overlap = plot_focal_field(
+    initial_field, target_field, "Initial focal-plane field (unoptimized radii)",
+    run_dir / "initial_focal_field.png",
+)
+log(f"Initial focal-plane coherent overlap: {initial_overlap:.6f}")
+
 # %% 3. One optimization step
-EPOCHS, LR, REPORT_EVERY = 5000, 2e-3, 5
+EPOCHS, LR, REPORT_EVERY = 10000, 2e-3, 5
 
 loss_fn = overlap_loss
 optimizer = torch.optim.Adam([u_tensor], lr=LR)
-# scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-7)
-
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=2e-5)
+# scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min")
 def run_one_epoch(epoch_index, tb_writer=None):
     if target_X.shape != u_tensor.shape:
         raise ValueError('Shapes dont match')
@@ -359,18 +425,51 @@ def run_one_epoch(epoch_index, tb_writer=None):
     return loss.item()
 
 # %% 4. Optimization loop
-start_time = time.time()
-for epoch in range(EPOCHS):
-    last_loss = run_one_epoch(epoch)
-    # scheduler.step()
+loss_history = []
+log(f"Optimization: epochs={EPOCHS}, lr={LR}, trainable radii={u_tensor.numel():,}")
+with (run_dir / "loss_history.csv").open("w", newline="", encoding="utf-8") as history_file, \
+        SummaryWriter(log_dir=str(run_dir / "tensorboard")) as tb_writer:
+    history_writer = csv.writer(history_file)
+    history_writer.writerow(["epoch", "elapsed_seconds", "loss"])
+    start_time = time.perf_counter()
+    for epoch in range(EPOCHS):
+        last_loss = run_one_epoch(epoch)
+        scheduler.step()
+        elapsed = time.perf_counter() - start_time
+        record = (epoch + 1, elapsed, last_loss)
+        loss_history.append(record)
+        history_writer.writerow(record)
+        # tb_writer.add_scalar("Loss/overlap", last_loss, epoch + 1)
+        tb_writer.add_scalar(
+    "Optimizer/learning_rate",
+    optimizer.param_groups[0]["lr"],
+    epoch + 1,
+)
 
-    if epoch % REPORT_EVERY == 0:
-        elapsed = time.time() - start_time
-        log(f"Epoch {epoch:>4d} | loss {last_loss:.6f} | "
-            f"elapsed {elapsed:.1f} sec")
-        start_time = time.time()
+        if epoch == 0 or (epoch + 1) % REPORT_EVERY == 0 or epoch == EPOCHS - 1:
+            history_file.flush()
+            tb_writer.flush()
+            log(f"Epoch {epoch + 1:>5d}/{EPOCHS} | loss {last_loss:.6f} | "
+                f"total elapsed {elapsed:.1f} sec")
 
-# %% Plot optimized field (Written completely by codex)
+# %% Plot optimization loss against epoch and elapsed time
+if loss_history:
+    history = np.asarray(loss_history)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4), constrained_layout=True)
+    for ax, horizontal, label in (
+        (axes[0], history[:, 0], "Epoch"),
+        (axes[1], history[:, 1], "Elapsed time (s)"),
+    ):
+        ax.plot(horizontal, history[:, 2])
+        ax.set(xlabel=label, ylabel="Overlap loss (1 − efficiency)")
+        ax.grid(True, alpha=0.3)
+    fig.suptitle("Optimization loss")
+    fig.savefig(run_dir / "loss_history.png", dpi=200)
+    log(f"Loss: initial={history[0, 2]:.6f}, last={history[-1, 2]:.6f}, "
+        f"best={history[:, 2].min():.6f}")
+    plt.show()
+
+# %% Plot optimized focal-plane field
 with torch.no_grad():
     optimized_radii = smooth_radius(u_tensor, radius_response)
     optimized_phase = interpolate_response(
@@ -383,37 +482,10 @@ with torch.no_grad():
     optimized_field = model(
         incident_field(target_X, target_Y) * optimized_transmission
     )
-    optimized_overlap = 1.0 - overlap_loss(optimized_field, target_field).item()
-    # Remove the constant phase offset, which the overlap loss ignores.
-    global_phase = torch.angle(torch.sum(target_field.conj() * optimized_field))
-    field_amplitude = optimized_field.abs().cpu().numpy()
-    field_phase = torch.angle(
-        optimized_field * torch.exp(-1j * global_phase)
-    ).cpu().numpy()
-
-extent_um = [
-    target_x[0].item() * 1e6, target_x[-1].item() * 1e6,
-    target_y[0].item() * 1e6, target_y[-1].item() * 1e6,
-]
-fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
-amplitude_image = axes[0].imshow(
-    field_amplitude, extent=extent_um, origin="lower",
-    cmap="viridis", vmin=0, aspect="equal",
+optimized_overlap = plot_focal_field(
+    optimized_field, target_field, "Optimized focal-plane field",
+    run_dir / "optimized_focal_field.png",
 )
-fig.colorbar(amplitude_image, ax=axes[0], label="Field amplitude |E|")
-axes[0].set(title="Optimized amplitude", xlabel="x (μm)", ylabel="y (μm)")
-
-phase_image = axes[1].imshow(
-    field_phase, extent=extent_um, origin="lower",
-    cmap="twilight", vmin=-np.pi, vmax=np.pi, aspect="equal",
-)
-phase_colorbar = fig.colorbar(
-    phase_image, ax=axes[1], label="Phase relative to target (rad)"
-)
-phase_colorbar.set_ticks([-np.pi, 0, np.pi], labels=["−π", "0", "π"])
-axes[1].set(title="Optimized phase", xlabel="x (μm)", ylabel="y (μm)")
-fig.suptitle(f"Optimized output field — coherent overlap {optimized_overlap:.4f}")
-plt.show()
 # %% Final overlap
 
 
