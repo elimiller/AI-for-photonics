@@ -28,7 +28,7 @@ gf.gpdk.PDK.activate()
 # %%  Get correct save directory
 path = Path(__file__).parent.parent
 print(path)
-save_path = path / "Unit_cell_Libraries" /  'Ellipse Pillar SiN on SiO2 532 nm KAIST' 
+save_path = path / "Unit_cell_Libraries" /  'Ellipse Pillar SiN in SiO2 532 nm KAIST' 
 print(save_path)
 gds_lib_path = save_path / 'GDS Library'
 data_lib_path = save_path / 'Library Data'
@@ -45,7 +45,8 @@ def sellfit(x):
 print(sellfit(-0.248)) # Normalized wavelength
 
 # %% Manual params
-
+BACKGROUND = "oxide"  # "air" or "oxide"
+n_background = 1.46 if BACKGROUND == "oxide" else 1.0
 theta_list =  [0] 
 wavelength = 0.532             # design wavelength [um]
 
@@ -242,7 +243,7 @@ def calculate_transmissions(
 
     # Meep uses k_point in cycles/length, hence the 2*pi conversion here.
     kx = 2 * np.pi * (
-        fcen * np.sin(np.deg2rad(incident_angle_deg)) + order_x / period
+       n_background* fcen * np.sin(np.deg2rad(incident_angle_deg)) + order_x / period
     )
     ky = 2 * np.pi * order_y / period
     kz_squared = (2 * np.pi * medium_index * fcen) ** 2 - kx**2 - ky**2
@@ -520,7 +521,7 @@ def run_unit_cell(
 
     # Meep's k_point is in inverse-layout units.  The incident medium is air,
     # so |k| = fcen and kx = fcen * sin(theta).
-    k_point = mp.Vector3(fcen * np.sin(incident_angle_rad), 0, 0)
+    k_point = mp.Vector3(n_background*fcen * np.sin(incident_angle_rad), 0, 0)
 
     symmetries = []
     if apply_mirror_symmetries:
@@ -558,7 +559,7 @@ def run_unit_cell(
         # symmetries=symmetries,
         resolution=simulation_resolution,
         Courant=courant,
-        default_material=mp.air,
+        default_material=mp.Medium(index = n_background),
     )
     transmission_plane = mp.Volume(
         center=mp.Vector3(0, 0, monitor_z),
@@ -760,6 +761,7 @@ def simulate_gds_unit_cell(
         pillar_field["reflected_flux"],
         incident_angle_deg,
         period=period,
+        medium_index=n_background
     )
     return {
         "geometry": ellipse_geometry_metadata(file_path),
@@ -1167,7 +1169,7 @@ constrained_radius_sweeps(
     theta_list,
     gds_lib_path,
     data_lib_path,
-    radius_samples=400,
+    radius_samples=16,
     circles_only=True,
 )
 # %% Post sim processing and phase coverage plot
@@ -1424,8 +1426,8 @@ def plot_circle_radius_coverage(
 
 plot_circle_radius_coverage(pillar_height_um = 0.8,period_um = 0.35)
 # %% Plot stability circles
-period_list0 = [0.33,0.34,0.35,0.36,0.37]           # square-lattice pitch [um]
-pillar_h_list0 = [0.78,0.79,0.800,0.81,0.82]
+# period_list0 = [0.33,0.34,0.35,0.36,0.37]           # square-lattice pitch [um]
+# pillar_h_list0 = [0.78,0.79,0.800,0.81,0.82]
 for period in period_list0:
     for pillar_h in pillar_h_list0:
         plot_circle_radius_coverage(pillar_height_um = pillar_h,period_um = period)
